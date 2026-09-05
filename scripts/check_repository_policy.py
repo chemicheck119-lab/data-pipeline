@@ -63,14 +63,25 @@ FORBIDDEN_DOCUMENT_ARCHIVE_SUFFIXES = {
 }
 DATASET_CONTENT_SUFFIXES = {
     ".avro",
+    ".arrow",
     ".csv",
     ".db",
     ".feather",
+    ".ipc",
     ".json",
     ".jsonl",
+    ".joblib",
+    ".mat",
     ".ndjson",
+    ".npy",
+    ".npz",
     ".orc",
     ".parquet",
+    ".pickle",
+    ".pkl",
+    ".rdata",
+    ".rds",
+    ".sav",
     ".sql",
     ".sqlite",
     ".tsv",
@@ -547,10 +558,11 @@ def manifest_errors(
 
 
 def append_only_manifest_errors(
-    base_ref: str, repository: Path = Path(".")
+    base_ref: Optional[str], repository: Path = Path(".")
 ) -> list[str]:
+    revision = f"{base_ref}..HEAD" if base_ref else "HEAD"
     commit_result = subprocess.run(
-        ["git", "rev-list", "--reverse", f"{base_ref}..HEAD"],
+        ["git", "rev-list", "--reverse", revision],
         check=True,
         capture_output=True,
         text=True,
@@ -599,7 +611,10 @@ def append_only_manifest_errors(
 
 
 def is_fixture_metadata(path: Path) -> bool:
-    return path.name.endswith(FIXTURE_METADATA_SUFFIX)
+    return (
+        "fixtures" in path.parts[:-1]
+        and path.name.endswith(FIXTURE_METADATA_SUFFIX)
+    )
 
 
 def is_fixture_payload(path: Path) -> bool:
@@ -612,6 +627,10 @@ def is_fixture_payload(path: Path) -> bool:
 
 def fixture_metadata_path(path: Path) -> Path:
     return path.with_name(path.name + FIXTURE_METADATA_SUFFIX)
+
+
+def fixture_payload_path(path: Path) -> Path:
+    return path.with_name(path.name[: -len(FIXTURE_METADATA_SUFFIX)])
 
 
 def fixture_errors(
@@ -689,8 +708,31 @@ def fixture_errors(
     return errors
 
 
-def is_approved_dataset_content_path(path: Path) -> bool:
-    if is_fixture_payload(path) or is_fixture_metadata(path) or is_manifest_path(path):
+def fixture_metadata_pair_errors(
+    tracked: TrackedObject,
+    object_lookup: dict[tuple[str, Path], TrackedObject],
+    repository: Path,
+    blob_cache: dict[str, bytes],
+) -> list[str]:
+    if not is_fixture_metadata(tracked.path):
+        return []
+    payload_path = fixture_payload_path(tracked.path)
+    payload = object_lookup.get((tracked.revision, payload_path))
+    if payload is None:
+        return [f"orphan fixture metadata {tracked.path}: missing payload {payload_path}"]
+    if fixture_errors(payload, object_lookup, repository, blob_cache):
+        return [
+            f"fixture metadata {tracked.path} does not validate its companion payload"
+        ]
+    return []
+
+
+def is_approved_dataset_content_path(
+    path: Path,
+    is_approved_fixture: bool,
+    is_approved_fixture_metadata: bool,
+) -> bool:
+    if is_approved_fixture or is_approved_fixture_metadata or is_manifest_path(path):
         return True
     return path.suffix.lower() == ".json" and "schemas" in path.parts[:-1]
 
@@ -708,6 +750,12 @@ def violations(
         is_approved_fixture = (
             is_fixture_payload(tracked.path) and not fixture_validation_errors
         )
+        metadata_pair_errors = fixture_metadata_pair_errors(
+            tracked, object_lookup, repository, blob_cache
+        )
+        is_approved_fixture_metadata = (
+            is_fixture_metadata(tracked.path) and not metadata_pair_errors
+        )
         if tracked.object_type == "blob" and tracked.size > MAX_TRACKED_BYTES:
             errors.append(f"tracked file exceeds 10 MiB: {tracked.path}")
         if is_model_weight(tracked.path):
@@ -721,7 +769,11 @@ def violations(
             errors.append(f"source document or archive must not be tracked: {tracked.path}")
         if (
             tracked.path.suffix.lower() in DATASET_CONTENT_SUFFIXES
-            and not is_approved_dataset_content_path(tracked.path)
+            and not is_approved_dataset_content_path(
+                tracked.path,
+                is_approved_fixture,
+                is_approved_fixture_metadata,
+            )
         ):
             errors.append(
                 f"dataset content must be stored outside Git or as an approved fixture: {tracked.path}"
@@ -736,6 +788,7 @@ def violations(
             errors.append(f"possible {label} detected in tracked blob: {tracked.path}")
         errors.extend(manifest_errors(tracked, repository, blob_cache))
         errors.extend(fixture_validation_errors)
+        errors.extend(metadata_pair_errors)
         is_allowed_placeholder = (
             tracked.object_type == "blob" and tracked.path in ALLOWED_PLACEHOLDERS
         )
@@ -766,6 +819,8 @@ def main() -> int:
     errors = violations(objects)
     if args.base_ref:
         errors.extend(append_only_manifest_errors(args.base_ref))
+    elif args.all_history:
+        errors.extend(append_only_manifest_errors(None))
     if errors:
         print("\n".join(errors), file=sys.stderr)
         return 1

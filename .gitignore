@@ -17,6 +17,38 @@ artifacts/
 outputs/
 models/
 
+# Common serialized corpus formats
+*.arrow
+*.avro
+*.feather
+*.ipc
+*.joblib
+*.mat
+*.npy
+*.npz
+*.orc
+*.parquet
+*.pickle
+*.pkl
+*.rdata
+*.rds
+*.sav
+!**/fixtures/**/*.arrow
+!**/fixtures/**/*.avro
+!**/fixtures/**/*.feather
+!**/fixtures/**/*.ipc
+!**/fixtures/**/*.joblib
+!**/fixtures/**/*.mat
+!**/fixtures/**/*.npy
+!**/fixtures/**/*.npz
+!**/fixtures/**/*.orc
+!**/fixtures/**/*.parquet
+!**/fixtures/**/*.pickle
+!**/fixtures/**/*.pkl
+!**/fixtures/**/*.rdata
+!**/fixtures/**/*.rds
+!**/fixtures/**/*.sav
+
 # Model weights
 *.bin
 *.ckpt

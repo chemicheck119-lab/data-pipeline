@@ -73,8 +73,16 @@ class RepositoryPolicyTest(unittest.TestCase):
                 self.assertTrue(POLICY.violations([tracked]))
 
     def test_rejects_json_corpus_outside_allowlisted_paths(self) -> None:
-        tracked = POLICY.TrackedObject(Path("corpora/export.json"), 10)
-        self.assertTrue(POLICY.violations([tracked]))
+        for filename in ("corpora/export.json", "corpora/export.fixture.json"):
+            with self.subTest(filename=filename):
+                tracked = POLICY.TrackedObject(Path(filename), 10)
+                self.assertTrue(POLICY.violations([tracked]))
+
+    def test_rejects_common_binary_corpus_formats(self) -> None:
+        for filename in ("data.npy", "data.npz", "data.pkl", "data.arrow"):
+            with self.subTest(filename=filename):
+                tracked = POLICY.TrackedObject(Path("corpora") / filename, 10)
+                self.assertTrue(POLICY.violations([tracked]))
 
     def test_commit_scan_keeps_every_path_for_identical_blobs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -304,6 +312,10 @@ class RepositoryPolicyTest(unittest.TestCase):
 
             errors = POLICY.append_only_manifest_errors(base, repository)
             self.assertTrue(any("append-only" in error for error in errors))
+            all_history_errors = POLICY.append_only_manifest_errors(None, repository)
+            self.assertTrue(
+                any("append-only" in error for error in all_history_errors)
+            )
 
     def test_rejects_modifying_manifest_added_earlier_in_same_range(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -337,6 +349,11 @@ class RepositoryPolicyTest(unittest.TestCase):
         tracked = POLICY.TrackedObject(Path("fixtures/users.csv"), 10)
         errors = POLICY.violations([tracked])
         self.assertTrue(any("missing companion" in error for error in errors))
+
+    def test_rejects_orphan_fixture_metadata(self) -> None:
+        tracked = POLICY.TrackedObject(Path("fixtures/export.fixture.json"), 10)
+        errors = POLICY.violations([tracked])
+        self.assertTrue(any("orphan fixture metadata" in error for error in errors))
 
     def test_accepts_synthetic_fixture_with_matching_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
