@@ -175,6 +175,7 @@ MANIFEST_USAGE_ROLES = {"development", "evaluation", "fixture", "reference", "tr
 NAMED_EVALUATION_RECORD_COUNTS = {
     "parser_national_external_442": 442,
     "resolver_ulsan_locked_419": 419,
+    "speech_aihub119_gwangju_fire_validation_77": 77,
 }
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$", re.IGNORECASE)
 FIXTURE_METADATA_SUFFIX = ".fixture.json"
