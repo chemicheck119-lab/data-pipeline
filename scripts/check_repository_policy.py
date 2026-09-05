@@ -177,6 +177,13 @@ NAMED_EVALUATION_RECORD_COUNTS = {
     "resolver_ulsan_locked_419": 419,
     "speech_aihub119_gwangju_fire_validation_77": 77,
 }
+CROSS_REGION_SPEECH_EVALUATION_PATTERN = re.compile(
+    r"^speech_(aihub_71768_(?:seoul|incheon)_fire)_validation_([1-9][0-9]*)$"
+)
+RADIO_SIMULATION_EVALUATION_PATTERN = re.compile(
+    r"^speech_(aihub_71768_(?:gwangju|seoul|incheon)_fire_"
+    r"radio_sim_v1_[a-z0-9_]+)_([1-9][0-9]*)$"
+)
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$", re.IGNORECASE)
 FIXTURE_METADATA_SUFFIX = ".fixture.json"
 FIXTURE_CLASSIFICATIONS = {"public_redistributable", "synthetic"}
@@ -591,9 +598,18 @@ def evaluation_usage_errors(manifest: dict, prefix: str) -> list[str]:
         return errors
     evaluation_id = evaluation.get("id")
     expected_count = NAMED_EVALUATION_RECORD_COUNTS.get(evaluation_id)
+    dataset_id = manifest.get("dataset_id")
+    if expected_count is None and isinstance(evaluation_id, str):
+        dynamic_match = CROSS_REGION_SPEECH_EVALUATION_PATTERN.fullmatch(
+            evaluation_id
+        ) or RADIO_SIMULATION_EVALUATION_PATTERN.fullmatch(evaluation_id)
+        if dynamic_match and dataset_id == dynamic_match.group(1):
+            expected_count = int(dynamic_match.group(2))
     if expected_count is None:
-        allowed = ", ".join(sorted(NAMED_EVALUATION_RECORD_COUNTS))
-        errors.append(f"{prefix} evaluation.id must be one of: {allowed}")
+        errors.append(
+            f"{prefix} evaluation.id is not a registered fixed, cross-region, "
+            "or radio-simulation evaluation"
+        )
     record_count = evaluation.get("record_count")
     if not isinstance(record_count, int) or isinstance(record_count, bool):
         errors.append(f"{prefix} evaluation.record_count must be an integer")
