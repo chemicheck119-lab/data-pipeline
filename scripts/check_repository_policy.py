@@ -165,6 +165,7 @@ ALLOWED_PLACEHOLDERS = {
     root / "README.md" for root in FORBIDDEN_OUTPUT_ROOTS
 }
 MANIFEST_ROOT = Path("data/manifests")
+SCHEMA_ROOT = Path("schemas")
 MANIFEST_CLASSIFICATIONS = {"approved_restricted", "derived", "public", "synthetic"}
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$", re.IGNORECASE)
 FIXTURE_METADATA_SUFFIX = ".fixture.json"
@@ -177,6 +178,7 @@ class TrackedObject:
     size: int
     object_id: Optional[str] = None
     object_type: str = "blob"
+    object_mode: str = "100644"
     revision: str = "manual"
 
 
@@ -218,6 +220,7 @@ def current_tree_objects(repository: Path = Path(".")) -> list[TrackedObject]:
                 size=size,
                 object_id=object_id,
                 object_type=object_type,
+                object_mode=mode.decode("ascii"),
                 revision="INDEX",
             )
         )
@@ -273,6 +276,7 @@ def revision_objects(
                     size=size,
                     object_id=object_id,
                     object_type=object_type,
+                    object_mode=fields[0].decode("ascii"),
                     revision=commit,
                 )
             )
@@ -478,11 +482,38 @@ def integrity_report_errors(report: object, prefix: str) -> list[str]:
             errors.append(
                 f"{prefix}.source_drift.changes_detected must be a non-negative integer"
             )
-        elif drift_status == "passed" and changes_detected != 0:
+        elif changes_detected != 0:
             errors.append(
-                f"{prefix}.source_drift.changes_detected must be 0 when passed"
+                f"{prefix}.source_drift.changes_detected must be 0"
             )
     return errors
+
+
+def split_uses_randomness(split: dict) -> bool:
+    """Return whether a split recipe declares stochastic behavior."""
+    random_markers = re.compile(
+        r"(?:^|[^a-z])(random|shuffle|stochastic|bootstrap|resample)"
+    )
+    strategy = split.get("strategy")
+    parameters = split.get("parameters")
+    searchable = " ".join(
+        (
+            strategy.lower() if isinstance(strategy, str) else "",
+            json.dumps(parameters, sort_keys=True).lower()
+            if isinstance(parameters, dict)
+            else "",
+        )
+    )
+    return bool(random_markers.search(searchable))
+
+
+def split_seed_errors(split: dict, prefix: str) -> list[str]:
+    seed = split.get("seed")
+    if seed is not None and (not isinstance(seed, int) or isinstance(seed, bool)):
+        return [f"{prefix}.seed must be an integer or null"]
+    if seed is None and split_uses_randomness(split):
+        return [f"{prefix}.seed must be an integer for a stochastic strategy"]
+    return []
 
 
 def manifest_errors(
@@ -538,9 +569,7 @@ def manifest_errors(
                 errors.append(f"{prefix} split.{field} must be a non-empty string")
         if not isinstance(split.get("parameters"), dict):
             errors.append(f"{prefix} split.parameters must be an object")
-        seed = split.get("seed")
-        if seed is not None and (not isinstance(seed, int) or isinstance(seed, bool)):
-            errors.append(f"{prefix} split.seed must be an integer or null")
+        errors.extend(split_seed_errors(split, f"{prefix} split"))
 
     if classification == "derived":
         errors.extend(
@@ -706,6 +735,8 @@ def fixture_errors(
     if not is_fixture_payload(tracked.path):
         return []
     prefix = f"invalid fixture {tracked.path}:"
+    if tracked.object_mode == "120000":
+        return [f"{prefix} symbolic-link payloads are not allowed"]
     errors: list[str] = []
     content = blob_content(tracked, repository, blob_cache)
     if content is None:
@@ -797,10 +828,51 @@ def is_approved_dataset_content_path(
     path: Path,
     is_approved_fixture: bool,
     is_approved_fixture_metadata: bool,
+    is_approved_schema: bool,
 ) -> bool:
-    if is_approved_fixture or is_approved_fixture_metadata or is_manifest_path(path):
-        return True
-    return path.suffix.lower() == ".json" and "schemas" in path.parts[:-1]
+    return (
+        is_approved_fixture
+        or is_approved_fixture_metadata
+        or is_manifest_path(path)
+        or is_approved_schema
+    )
+
+
+def is_schema_path(path: Path) -> bool:
+    return (
+        (path.parent == SCHEMA_ROOT or SCHEMA_ROOT in path.parents)
+        and path.name.lower().endswith(".schema.json")
+    )
+
+
+def schema_errors(
+    tracked: TrackedObject,
+    repository: Path,
+    blob_cache: dict[str, bytes],
+) -> list[str]:
+    if not is_schema_path(tracked.path):
+        return []
+    prefix = f"invalid JSON schema {tracked.path}:"
+    content = blob_content(tracked, repository, blob_cache)
+    if content is None:
+        return [f"{prefix} content is unavailable for validation"]
+    try:
+        schema = json.loads(content.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        return [f"{prefix} malformed UTF-8 JSON ({error})"]
+    if not isinstance(schema, dict):
+        return [f"{prefix} root must be a JSON object"]
+    dialect = schema.get("$schema")
+    if not isinstance(dialect, str) or not re.fullmatch(
+        r"https?://json-schema\.org/draft(?:/|-)[^\s#]+#?", dialect
+    ):
+        return [f"{prefix} $schema must declare a json-schema.org draft"]
+    if not any(
+        keyword in schema
+        for keyword in ("$ref", "allOf", "anyOf", "oneOf", "properties", "type")
+    ):
+        return [f"{prefix} must contain a structural JSON Schema keyword"]
+    return []
 
 
 def is_plain_text_corpus(path: Path) -> bool:
@@ -833,6 +905,10 @@ def violations(
         is_approved_fixture_metadata = (
             is_fixture_metadata(tracked.path) and not metadata_pair_errors
         )
+        schema_validation_errors = schema_errors(tracked, repository, blob_cache)
+        is_approved_schema = (
+            is_schema_path(tracked.path) and not schema_validation_errors
+        )
         if tracked.object_type == "blob" and tracked.size > MAX_TRACKED_BYTES:
             errors.append(f"tracked file exceeds 10 MiB: {tracked.path}")
         if is_model_weight(tracked.path):
@@ -853,6 +929,7 @@ def violations(
                 tracked.path,
                 is_approved_fixture,
                 is_approved_fixture_metadata,
+                is_approved_schema,
             )
         ):
             errors.append(
@@ -869,6 +946,7 @@ def violations(
         errors.extend(manifest_errors(tracked, repository, blob_cache))
         errors.extend(fixture_validation_errors)
         errors.extend(metadata_pair_errors)
+        errors.extend(schema_validation_errors)
         is_allowed_placeholder = (
             tracked.object_type == "blob" and tracked.path in ALLOWED_PLACEHOLDERS
         )

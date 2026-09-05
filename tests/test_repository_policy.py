@@ -99,6 +99,37 @@ class RepositoryPolicyTest(unittest.TestCase):
         tracked = POLICY.TrackedObject(Path("requirements.txt"), 10)
         self.assertEqual([], POLICY.violations([tracked]))
 
+    def test_does_not_treat_nested_schemas_directory_as_schema_root(self) -> None:
+        tracked = POLICY.TrackedObject(Path("corpora/schemas/export.json"), 10)
+        errors = POLICY.violations([tracked])
+        self.assertTrue(any("dataset content" in error for error in errors))
+
+    def test_schema_exemption_requires_valid_schema_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory)
+            self._git(repository, "init", "-b", "main")
+            schema = repository / "schemas" / "records.schema.json"
+            schema.parent.mkdir(parents=True)
+            schema.write_text(json.dumps({"records": []}))
+            self._git(repository, "add", "schemas/records.schema.json")
+
+            objects = POLICY.current_tree_objects(repository)
+            errors = POLICY.violations(objects, repository)
+            self.assertTrue(any("invalid JSON schema" in error for error in errors))
+
+            schema.write_text(
+                json.dumps(
+                    {
+                        "$schema": "https://json-schema.org/draft/2020-12/schema",
+                        "type": "object",
+                        "properties": {},
+                    }
+                )
+            )
+            self._git(repository, "add", "schemas/records.schema.json")
+            objects = POLICY.current_tree_objects(repository)
+            self.assertEqual([], POLICY.violations(objects, repository))
+
     def test_commit_scan_keeps_every_path_for_identical_blobs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repository = Path(directory)
@@ -323,7 +354,25 @@ class RepositoryPolicyTest(unittest.TestCase):
             "source_drift": {"status": "passed", "changes_detected": 3},
         }
         errors = POLICY.integrity_report_errors(report, "manifest integrity_report")
-        self.assertTrue(any("must be 0 when passed" in error for error in errors))
+        self.assertTrue(any("changes_detected must be 0" in error for error in errors))
+
+        report["source_drift"]["status"] = "not_applicable"
+        errors = POLICY.integrity_report_errors(report, "manifest integrity_report")
+        self.assertTrue(any("changes_detected must be 0" in error for error in errors))
+
+    def test_stochastic_split_requires_integer_seed(self) -> None:
+        errors = POLICY.split_seed_errors(
+            {"strategy": "random shuffle", "parameters": {}, "seed": None},
+            "manifest split",
+        )
+        self.assertTrue(any("stochastic strategy" in error for error in errors))
+        self.assertEqual(
+            [],
+            POLICY.split_seed_errors(
+                {"strategy": "fixed fixture", "parameters": {}, "seed": None},
+                "manifest split",
+            ),
+        )
 
     def test_derived_manifest_requires_preprocessing_recipe(self) -> None:
         errors = POLICY.recipe_errors(None, "manifest preprocessing")
@@ -428,6 +477,30 @@ class RepositoryPolicyTest(unittest.TestCase):
         )
         errors = POLICY.violations([tracked])
         self.assertTrue(any("available Git blob" in error for error in errors))
+
+    def test_rejects_symbolic_link_fixture_payload(self) -> None:
+        tracked = POLICY.TrackedObject(
+            Path("fixtures/sample.csv"),
+            len("/etc/passwd"),
+            object_mode="120000",
+        )
+        errors = POLICY.violations([tracked])
+        self.assertTrue(any("symbolic-link" in error for error in errors))
+
+    def test_index_scan_preserves_symbolic_link_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory)
+            self._git(repository, "init", "-b", "main")
+            fixture = repository / "fixtures" / "sample.csv"
+            fixture.parent.mkdir(parents=True)
+            os.symlink("/etc/passwd", fixture)
+            self._git(repository, "add", "fixtures/sample.csv")
+
+            objects = POLICY.current_tree_objects(repository)
+            payload = next(item for item in objects if item.path == Path("fixtures/sample.csv"))
+            self.assertEqual("120000", payload.object_mode)
+            errors = POLICY.violations(objects, repository)
+            self.assertTrue(any("symbolic-link" in error for error in errors))
 
     def test_rejects_orphan_fixture_metadata(self) -> None:
         tracked = POLICY.TrackedObject(Path("fixtures/export.fixture.json"), 10)
