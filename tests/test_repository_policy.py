@@ -411,6 +411,42 @@ class RepositoryPolicyTest(unittest.TestCase):
         errors = POLICY.integrity_report_errors(report, "manifest integrity_report")
         self.assertTrue(any("reason is required" in error for error in errors))
 
+    def test_not_evaluated_split_integrity_requires_reason(self) -> None:
+        report = {
+            "schema_version": "1.0.0",
+            "generated_at": "2026-09-05T00:00:00Z",
+            "required_fields": {"status": "passed", "missing_count": 0},
+            "duplicates": {"status": "passed", "count": 0},
+            "schema_validation": {"status": "passed", "error_count": 0},
+            "split_integrity": {
+                "entities": {
+                    "speaker": {
+                        "status": "not_applicable",
+                        "reason": "stable speaker identity unavailable",
+                    },
+                    "source": {
+                        "status": "not_evaluated",
+                        "reason": "training partition was not supplied",
+                    },
+                    "event": {
+                        "status": "not_evaluated",
+                        "reason": "training partition was not supplied",
+                    },
+                }
+            },
+            "source_drift": {
+                "status": "not_applicable",
+                "changes_detected": 0,
+                "reason": "first snapshot",
+            },
+        }
+        self.assertEqual(
+            [], POLICY.integrity_report_errors(report, "manifest integrity_report")
+        )
+        del report["split_integrity"]["entities"]["source"]["reason"]
+        errors = POLICY.integrity_report_errors(report, "manifest integrity_report")
+        self.assertTrue(any("reason is required" in error for error in errors))
+
     def test_rejects_boolean_integrity_counts(self) -> None:
         base_report = {
             "schema_version": "1.0.0",

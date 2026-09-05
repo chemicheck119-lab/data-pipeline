@@ -1,0 +1,120 @@
+{
+  "schema_version": "1.0.0",
+  "dataset_id": "aihub_71768_incheon_fire",
+  "dataset_version": "dataset-71768-downloaded-2026-09-05",
+  "created_at": "2026-09-05T12:03:33.819084Z",
+  "classification": "approved_restricted",
+  "usage_role": "evaluation",
+  "source": {
+    "name": "AIHub 119 intelligent emergency-call speech recognition data",
+    "url": "https://www.aihub.or.kr/aihubdata/data/view.do?dataSetSn=71768",
+    "license": "AIHub AI 허브 개방 데이터 이용정책, retrieved 2026-09-05; the publisher provides no version identifier",
+    "license_url": "https://www.aihub.or.kr/intrcn/guid/usagepolicy.do",
+    "license_summary": "AI model training use with attribution; no unapproved third-party access or redistribution; overseas transfer requires separate agreement",
+    "version": "dataset-71768-downloaded-2026-09-05",
+    "collected_at": "2026-09-05T12:02:00Z"
+  },
+  "split": {
+    "name": "validation",
+    "strategy": "provider fixed partition",
+    "unit": "record",
+    "parameters": {
+      "provider_partition": "Validation",
+      "used_for_tuning": false
+    },
+    "seed": null
+  },
+  "integrity_report": {
+    "schema_version": "1.0.0",
+    "generated_at": "2026-09-05T12:03:33.819084Z",
+    "required_fields": {
+      "status": "passed",
+      "missing_count": 0
+    },
+    "duplicates": {
+      "status": "passed",
+      "count": 0
+    },
+    "schema_validation": {
+      "status": "passed",
+      "error_count": 0
+    },
+    "pairing": {
+      "status": "passed",
+      "strategy": "audio and label archive member filename stem",
+      "paired_count": 129,
+      "provider_audio_path_match_count": 0,
+      "provider_audio_path_mismatch_count": 129,
+      "limitation": "the provider audioPath values do not name members in the downloaded partition; archive member stems are the only available pairing key"
+    },
+    "split_integrity": {
+      "entities": {
+        "speaker": {
+          "status": "not_applicable",
+          "reason": "labels contain speaker roles, not stable speaker identities"
+        },
+        "source": {
+          "status": "not_evaluated",
+          "overlap_count": null,
+          "reason": "training partition was not supplied for comparison"
+        },
+        "event": {
+          "status": "not_evaluated",
+          "overlap_count": null,
+          "reason": "training partition was not supplied for comparison"
+        }
+      }
+    },
+    "source_drift": {
+      "status": "not_applicable",
+      "changes_detected": 0,
+      "reason": "first pinned snapshot; later acquisitions must compare archive SHA-256 values with this manifest"
+    }
+  },
+  "artifacts": [
+    {
+      "path": "gs://chemi-check-ml-data-181872008704/raw/aihub/71768/incheon-fire/VS_인천_화재.zip",
+      "sha256": "d581c5319a8e62c2d48af63be64cf907ea8dd49d1adc6e4001b5e91929d8fcad"
+    },
+    {
+      "path": "gs://chemi-check-ml-data-181872008704/raw/aihub/71768/incheon-fire/VL_인천_화재.zip",
+      "sha256": "e79b97704d78922fb0cf511495ba8b6d5cd45213b852c1d835d2e4a8e01ee9cd"
+    }
+  ],
+  "inventory": {
+    "split": "validation",
+    "audio_count": 129,
+    "label_count": 129,
+    "paired_count": 129,
+    "audio_without_label": 0,
+    "label_without_audio": 0,
+    "duplicate_audio_stems": 0,
+    "duplicate_label_stems": 0,
+    "duplicate_record_ids": 0,
+    "duplicate_audio_contents": 0,
+    "duplicate_transcript_contents": 0,
+    "label_audio_path_mismatches": 129,
+    "missing_required_fields": 0,
+    "schema_error_count": 0,
+    "utterance_count": 3655,
+    "empty_utterance_count": 0,
+    "transcript_character_count": 55150,
+    "audio_seconds": 8821.92,
+    "min_audio_seconds": 30.04,
+    "max_audio_seconds": 175.16,
+    "sample_rates": [
+      8000
+    ],
+    "channel_counts": [
+      1
+    ],
+    "sample_widths": [
+      2
+    ],
+    "audio_hours": 2.451
+  },
+  "evaluation": {
+    "id": "speech_aihub_71768_incheon_fire_validation_129",
+    "record_count": 129
+  }
+}

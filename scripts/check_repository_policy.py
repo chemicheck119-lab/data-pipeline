@@ -477,9 +477,10 @@ def integrity_report_errors(report: object, prefix: str) -> list[str]:
                     errors.append(f"{entity_prefix} must be an object")
                     continue
                 status = result.get("status")
-                if status not in {"passed", "not_applicable"}:
+                if status not in {"passed", "not_applicable", "not_evaluated"}:
                     errors.append(
-                        f"{entity_prefix}.status must be passed or not_applicable"
+                        f"{entity_prefix}.status must be passed, not_applicable, "
+                        "or not_evaluated"
                     )
                 if status == "passed" and not is_zero_integer(
                     result.get("overlap_count")
@@ -487,12 +488,12 @@ def integrity_report_errors(report: object, prefix: str) -> list[str]:
                     errors.append(
                         f"{entity_prefix}.overlap_count must be 0 when passed"
                     )
-                if status == "not_applicable" and (
+                if status in {"not_applicable", "not_evaluated"} and (
                     not isinstance(result.get("reason"), str)
                     or not result["reason"].strip()
                 ):
                     errors.append(
-                        f"{entity_prefix}.reason is required when not_applicable"
+                        f"{entity_prefix}.reason is required when {status}"
                     )
 
     source_drift = report.get("source_drift")
