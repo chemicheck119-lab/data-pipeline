@@ -46,6 +46,27 @@ Manifest는 append-only이므로 동일한 출력 경로가 있으면 명령이 
 
 이 평가는 `speech_aihub119_gwangju_fire_validation_77`이며 Resolver 울산 419건, Parser 전국 442건 평가와 별개입니다. 신고접수 음성이므로 실제 소방 무전 성능을 증명하지 않습니다.
 
+### 교차지역 Validation manifest
+
+서울·인천처럼 학습 partition을 내려받지 않고 Validation만 외부평가에 사용하는 경우에는
+별도 명령으로 지역별 manifest를 만듭니다. 실제 레코드 수를 검사한 뒤 평가 ID에 고정하고,
+학습 데이터가 없으므로 train/evaluation 간 source·event overlap은 `passed`가 아니라
+`not_evaluated`로 기록합니다.
+
+```bash
+PYTHONPATH=src python -m chemicheck119_data.aihub119_evaluation \
+  --validation-audio /secure/VS_서울_화재.zip \
+  --validation-labels /secure/VL_서울_화재.zip \
+  --artifact-prefix gs://PRIVATE_BUCKET/raw/aihub/71768/seoul-fire \
+  --dataset-id aihub_71768_seoul_fire \
+  --dataset-version dataset-71768-downloaded-2026-09-05 \
+  --collected-at 2026-09-05T00:00:00Z \
+  --output data/manifests/aihub-71768-seoul-fire-validation.json
+```
+
+결과를 보기 전에 지역명·모델 설정·우선용어 목록을 고정합니다. 원본과 전사문은 Git에
+저장하지 않고 archive 해시·통계·검증 결과만 manifest에 남깁니다.
+
 ## 현재 상태
 
 | 항목 | 상태 |

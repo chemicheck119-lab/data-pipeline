@@ -8,6 +8,7 @@ import zipfile
 
 from chemicheck119_data.aihub119 import (
     _validate_stats,
+    build_evaluation_manifest,
     build_manifests,
     inspect_archive_pair,
 )
@@ -51,6 +52,31 @@ def write_pair(root: Path, split: str, stem: str, record_id: str) -> tuple[Path,
 
 
 class AIHub119Test(unittest.TestCase):
+    def test_builds_cross_region_validation_without_claiming_split_overlap_check(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            audio, labels = write_pair(
+                root, "validation", "record-seoul", "event-seoul"
+            )
+            manifest = build_evaluation_manifest(
+                validation_audio=audio,
+                validation_labels=labels,
+                artifact_prefix="gs://private/raw/aihub/71768/seoul-fire",
+                collected_at="2026-09-05T00:00:00Z",
+                generated_at="2026-09-05T00:01:00Z",
+                dataset_id="aihub_71768_seoul_fire",
+                dataset_version="dataset-71768-downloaded-2026-09-05",
+                expected_validation_records=1,
+            )
+            self.assertEqual("evaluation", manifest["usage_role"])
+            self.assertEqual(
+                "speech_aihub_71768_seoul_fire_validation_1",
+                manifest["evaluation"]["id"],
+            )
+            entities = manifest["integrity_report"]["split_integrity"]["entities"]
+            self.assertEqual("not_evaluated", entities["source"]["status"])
+            self.assertEqual("not_evaluated", entities["event"]["status"])
+
     def test_inspects_paired_archives_without_exposing_transcripts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             audio, labels = write_pair(Path(directory), "train", "record-a", "event-a")
