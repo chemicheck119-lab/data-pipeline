@@ -84,6 +84,21 @@ class RepositoryPolicyTest(unittest.TestCase):
                 tracked = POLICY.TrackedObject(Path("corpora") / filename, 10)
                 self.assertTrue(POLICY.violations([tracked]))
 
+    def test_rejects_plain_text_corpora_without_fixture_metadata(self) -> None:
+        for filename in (
+            "corpora/transcripts.txt",
+            "datasets/train.stm",
+            "exports/radio-transcript.text",
+        ):
+            with self.subTest(filename=filename):
+                tracked = POLICY.TrackedObject(Path(filename), 10)
+                errors = POLICY.violations([tracked])
+                self.assertTrue(any("dataset content" in error for error in errors))
+
+    def test_allows_general_plain_text_files(self) -> None:
+        tracked = POLICY.TrackedObject(Path("requirements.txt"), 10)
+        self.assertEqual([], POLICY.violations([tracked]))
+
     def test_commit_scan_keeps_every_path_for_identical_blobs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repository = Path(directory)
@@ -288,6 +303,27 @@ class RepositoryPolicyTest(unittest.TestCase):
 
             objects = POLICY.current_tree_objects(repository)
             self.assertEqual([], POLICY.violations(objects, repository))
+
+    def test_rejects_passing_source_drift_with_detected_changes(self) -> None:
+        report = {
+            "schema_version": "1.0.0",
+            "generated_at": "2026-09-05T00:00:00Z",
+            "required_fields": {"status": "passed", "missing_count": 0},
+            "duplicates": {"status": "passed", "count": 0},
+            "schema_validation": {"status": "passed", "error_count": 0},
+            "split_integrity": {
+                "entities": {
+                    entity: {
+                        "status": "not_applicable",
+                        "reason": "unit-test fixture",
+                    }
+                    for entity in ("speaker", "source", "event")
+                }
+            },
+            "source_drift": {"status": "passed", "changes_detected": 3},
+        }
+        errors = POLICY.integrity_report_errors(report, "manifest integrity_report")
+        self.assertTrue(any("must be 0 when passed" in error for error in errors))
 
     def test_derived_manifest_requires_preprocessing_recipe(self) -> None:
         errors = POLICY.recipe_errors(None, "manifest preprocessing")

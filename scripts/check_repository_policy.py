@@ -87,6 +87,15 @@ DATASET_CONTENT_SUFFIXES = {
     ".tsv",
     ".xml",
 }
+PLAIN_TEXT_CORPUS_SUFFIXES = {".ctm", ".lab", ".stm", ".text", ".txt"}
+CORPUS_DIRECTORY_NAMES = {
+    "corpora",
+    "corpus",
+    "dataset",
+    "datasets",
+    "transcript",
+    "transcripts",
+}
 FORBIDDEN_CREDENTIAL_NAMES = {
     "credentials.json",
     "credentials.yaml",
@@ -457,7 +466,8 @@ def integrity_report_errors(report: object, prefix: str) -> list[str]:
     if not isinstance(source_drift, dict):
         errors.append(f"{prefix}.source_drift must be an object")
     else:
-        if source_drift.get("status") not in {"passed", "not_applicable"}:
+        drift_status = source_drift.get("status")
+        if drift_status not in {"passed", "not_applicable"}:
             errors.append(
                 f"{prefix}.source_drift.status must be passed or not_applicable"
             )
@@ -467,6 +477,10 @@ def integrity_report_errors(report: object, prefix: str) -> list[str]:
         ) or changes_detected < 0:
             errors.append(
                 f"{prefix}.source_drift.changes_detected must be a non-negative integer"
+            )
+        elif drift_status == "passed" and changes_detected != 0:
+            errors.append(
+                f"{prefix}.source_drift.changes_detected must be 0 when passed"
             )
     return errors
 
@@ -789,6 +803,17 @@ def is_approved_dataset_content_path(
     return path.suffix.lower() == ".json" and "schemas" in path.parts[:-1]
 
 
+def is_plain_text_corpus(path: Path) -> bool:
+    """Identify common transcript/corpus text files without blocking general .txt files."""
+    if path.suffix.lower() not in PLAIN_TEXT_CORPUS_SUFFIXES:
+        return False
+    parent_names = {part.lower() for part in path.parts[:-1]}
+    stem_tokens = {token for token in re.split(r"[^a-z0-9]+", path.stem.lower()) if token}
+    return bool(parent_names & CORPUS_DIRECTORY_NAMES) or bool(
+        stem_tokens & CORPUS_DIRECTORY_NAMES
+    )
+
+
 def violations(
     objects: list[TrackedObject], repository: Path = Path(".")
 ) -> list[str]:
@@ -820,7 +845,10 @@ def violations(
         if tracked.path.suffix.lower() in FORBIDDEN_DOCUMENT_ARCHIVE_SUFFIXES:
             errors.append(f"source document or archive must not be tracked: {tracked.path}")
         if (
-            tracked.path.suffix.lower() in DATASET_CONTENT_SUFFIXES
+            (
+                tracked.path.suffix.lower() in DATASET_CONTENT_SUFFIXES
+                or is_plain_text_corpus(tracked.path)
+            )
             and not is_approved_dataset_content_path(
                 tracked.path,
                 is_approved_fixture,
