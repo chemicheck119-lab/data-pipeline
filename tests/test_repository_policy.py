@@ -121,6 +121,19 @@ class RepositoryPolicyTest(unittest.TestCase):
                 json.dumps(
                     {
                         "$schema": "https://json-schema.org/draft/2020-12/schema",
+                        "type": "nonsense",
+                    }
+                )
+            )
+            self._git(repository, "add", "schemas/records.schema.json")
+            objects = POLICY.current_tree_objects(repository)
+            errors = POLICY.violations(objects, repository)
+            self.assertTrue(any("metaschema" in error for error in errors))
+
+            schema.write_text(
+                json.dumps(
+                    {
+                        "$schema": "https://json-schema.org/draft/2020-12/schema",
                         "type": "object",
                         "properties": {},
                     }
@@ -281,6 +294,7 @@ class RepositoryPolicyTest(unittest.TestCase):
                         "dataset_version": "2026-09-05",
                         "created_at": "2026-09-05T00:00:00Z",
                         "classification": "synthetic",
+                        "usage_role": "fixture",
                         "source": {
                             "name": "generated fixture",
                             "url": "https://example.invalid/dataset",
@@ -452,6 +466,50 @@ class RepositoryPolicyTest(unittest.TestCase):
             "manifest preprocessing",
         )
         self.assertTrue(any("stochastic preprocessing" in error for error in errors))
+
+    def test_evaluation_split_cannot_be_used_for_tuning(self) -> None:
+        manifest = {
+            "usage_role": "evaluation",
+            "split": {
+                "name": "test",
+                "parameters": {"used_for_tuning": True},
+            },
+            "evaluation": {
+                "id": "resolver_ulsan_locked_419",
+                "record_count": 419,
+            },
+        }
+        errors = POLICY.evaluation_usage_errors(manifest, "manifest:")
+        self.assertTrue(any("must not be used for tuning" in error for error in errors))
+
+    def test_named_evaluation_enforces_record_count(self) -> None:
+        manifest = {
+            "usage_role": "evaluation",
+            "split": {"name": "test", "parameters": {}},
+            "evaluation": {
+                "id": "resolver_ulsan_locked_419",
+                "record_count": 442,
+            },
+        }
+        errors = POLICY.evaluation_usage_errors(manifest, "manifest:")
+        self.assertTrue(any("record_count 419" in error for error in errors))
+
+        manifest["evaluation"] = {
+            "id": "parser_national_external_442",
+            "record_count": 419,
+        }
+        errors = POLICY.evaluation_usage_errors(manifest, "manifest:")
+        self.assertTrue(any("record_count 442" in error for error in errors))
+
+    def test_integrity_report_must_not_predate_snapshot(self) -> None:
+        manifest = {
+            "created_at": "2026-09-05T02:00:00Z",
+            "source": {"collected_at": "2026-09-05T01:00:00Z"},
+            "integrity_report": {"generated_at": "2026-09-05T00:00:00Z"},
+        }
+        errors = POLICY.manifest_timestamp_errors(manifest, "manifest:")
+        self.assertTrue(any("source.collected_at" in error for error in errors))
+        self.assertTrue(any("created_at" in error for error in errors))
 
     def test_derived_manifest_requires_preprocessing_recipe(self) -> None:
         errors = POLICY.recipe_errors(None, "manifest preprocessing")

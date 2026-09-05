@@ -11,6 +11,9 @@ import subprocess
 import sys
 from typing import Optional
 
+from jsonschema.exceptions import SchemaError
+from jsonschema.validators import validator_for
+
 
 MAX_TRACKED_BYTES = 10 * 1024 * 1024
 FORBIDDEN_WEIGHT_SUFFIXES = {
@@ -168,6 +171,11 @@ ALLOWED_PLACEHOLDERS = {
 MANIFEST_ROOT = Path("data/manifests")
 SCHEMA_ROOT = Path("schemas")
 MANIFEST_CLASSIFICATIONS = {"approved_restricted", "derived", "public", "synthetic"}
+MANIFEST_USAGE_ROLES = {"development", "evaluation", "fixture", "reference", "training"}
+NAMED_EVALUATION_RECORD_COUNTS = {
+    "parser_national_external_442": 442,
+    "resolver_ulsan_locked_419": 419,
+}
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$", re.IGNORECASE)
 FIXTURE_METADATA_SUFFIX = ".fixture.json"
 FIXTURE_CLASSIFICATIONS = {"public_redistributable", "synthetic"}
@@ -377,14 +385,18 @@ def is_manifest_path(path: Path) -> bool:
     return MANIFEST_ROOT in path.parents and path.name != "README.md"
 
 
-def is_iso8601_timestamp(value: object) -> bool:
+def parse_iso8601_timestamp(value: object) -> Optional[datetime]:
     if not isinstance(value, str) or not value.strip():
-        return False
+        return None
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
-        return False
-    return parsed.tzinfo is not None
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
+def is_iso8601_timestamp(value: object) -> bool:
+    return parse_iso8601_timestamp(value) is not None
 
 
 def is_zero_integer(value: object) -> bool:
@@ -545,6 +557,80 @@ def preprocessing_seed_errors(recipe: dict, prefix: str) -> list[str]:
     return []
 
 
+def evaluation_usage_errors(manifest: dict, prefix: str) -> list[str]:
+    usage_role = manifest.get("usage_role")
+    if usage_role not in MANIFEST_USAGE_ROLES:
+        allowed = ", ".join(sorted(MANIFEST_USAGE_ROLES))
+        return [f"{prefix} usage_role must be one of: {allowed}"]
+
+    errors: list[str] = []
+    split = manifest.get("split")
+    if isinstance(split, dict):
+        split_name = split.get("name")
+        parameters = split.get("parameters")
+        evaluation_split = isinstance(split_name, str) and bool(
+            re.search(r"(?:^|[^a-z])(test|eval|evaluation)(?:$|[^a-z])", split_name.lower())
+        )
+        if (
+            (usage_role == "evaluation" or evaluation_split)
+            and isinstance(parameters, dict)
+            and parameters.get("used_for_tuning") is True
+        ):
+            errors.append(f"{prefix} evaluation split must not be used for tuning")
+
+    evaluation = manifest.get("evaluation")
+    if usage_role != "evaluation":
+        if evaluation is not None:
+            errors.append(
+                f"{prefix} evaluation metadata is only allowed for usage_role evaluation"
+            )
+        return errors
+    if not isinstance(evaluation, dict):
+        errors.append(f"{prefix} evaluation must be an object for usage_role evaluation")
+        return errors
+    evaluation_id = evaluation.get("id")
+    expected_count = NAMED_EVALUATION_RECORD_COUNTS.get(evaluation_id)
+    if expected_count is None:
+        allowed = ", ".join(sorted(NAMED_EVALUATION_RECORD_COUNTS))
+        errors.append(f"{prefix} evaluation.id must be one of: {allowed}")
+    record_count = evaluation.get("record_count")
+    if not isinstance(record_count, int) or isinstance(record_count, bool):
+        errors.append(f"{prefix} evaluation.record_count must be an integer")
+    elif expected_count is not None and record_count != expected_count:
+        errors.append(
+            f"{prefix} evaluation {evaluation_id} must have record_count {expected_count}"
+        )
+    return errors
+
+
+def manifest_timestamp_errors(manifest: dict, prefix: str) -> list[str]:
+    created_at = parse_iso8601_timestamp(manifest.get("created_at"))
+    source = manifest.get("source")
+    collected_at = (
+        parse_iso8601_timestamp(source.get("collected_at"))
+        if isinstance(source, dict)
+        else None
+    )
+    integrity_report = manifest.get("integrity_report")
+    report_generated_at = (
+        parse_iso8601_timestamp(integrity_report.get("generated_at"))
+        if isinstance(integrity_report, dict)
+        else None
+    )
+    if report_generated_at is None:
+        return []
+    errors: list[str] = []
+    if collected_at is not None and report_generated_at < collected_at:
+        errors.append(
+            f"{prefix} integrity_report.generated_at must not predate source.collected_at"
+        )
+    if created_at is not None and report_generated_at < created_at:
+        errors.append(
+            f"{prefix} integrity_report.generated_at must not predate created_at"
+        )
+    return errors
+
+
 def manifest_errors(
     tracked: TrackedObject,
     repository: Path,
@@ -576,6 +662,7 @@ def manifest_errors(
     if classification not in MANIFEST_CLASSIFICATIONS:
         allowed = ", ".join(sorted(MANIFEST_CLASSIFICATIONS))
         errors.append(f"{prefix} classification must be one of: {allowed}")
+    errors.extend(evaluation_usage_errors(manifest, prefix))
 
     source = manifest.get("source")
     if not isinstance(source, dict):
@@ -620,6 +707,7 @@ def manifest_errors(
             manifest.get("integrity_report"), f"{prefix} integrity_report"
         )
     )
+    errors.extend(manifest_timestamp_errors(manifest, prefix))
 
     artifacts = manifest.get("artifacts")
     if not isinstance(artifacts, list) or not artifacts:
@@ -920,6 +1008,13 @@ def schema_errors(
         for keyword in ("$ref", "allOf", "anyOf", "oneOf", "properties", "type")
     ):
         return [f"{prefix} must contain a structural JSON Schema keyword"]
+    validator_class = validator_for(schema, default=None)
+    if validator_class is None:
+        return [f"{prefix} $schema dialect is not supported by jsonschema"]
+    try:
+        validator_class.check_schema(schema)
+    except SchemaError as error:
+        return [f"{prefix} document does not satisfy its metaschema ({error.message})"]
     return []
 
 

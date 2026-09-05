@@ -19,6 +19,8 @@ AIHub·KOSHA·ICIS·PRTR 등 공개·승인 데이터를 재현 가능하게 수
 
 대용량 원본은 승인된 외부 저장소에 보관하고 Git에는 수집 방법, manifest, 해시, 스키마만 남깁니다. 작은 테스트 fixture는 라이선스·출처·개인정보 없음·SHA-256을 적은 동반 메타데이터를 통과한 경우에만 허용합니다.
 
+Manifest는 용도(`training`, `development`, `evaluation`, `fixture`, `reference`)를 명시합니다. 평가용 manifest는 울산 Resolver 419건과 전국 Parser 442건의 식별자·건수를 서로 다르게 검증하며, 평가 split을 튜닝에 사용했다고 표시하면 CI가 거부합니다.
+
 ## 현재 상태
 
 | 항목 | 상태 |
@@ -31,5 +33,6 @@ AIHub·KOSHA·ICIS·PRTR 등 공개·승인 데이터를 재현 가능하게 수
 ## 기본 검증
 
 ```bash
+python -m pip install --requirement requirements-dev.txt
 python scripts/check_repository_policy.py
 ```
