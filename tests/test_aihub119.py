@@ -250,6 +250,49 @@ class AIHub119Test(unittest.TestCase):
             stats = inspect_archive_pair(audio, labels, "training")
             self.assertEqual(1, stats.schema_error_count)
 
+    def test_rejects_empty_utterance_array(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            audio, labels = write_pair(root, "train", "record-a", "event-a")
+            with zipfile.ZipFile(labels, "r") as source:
+                label = json.loads(source.read("/record-a.json"))
+            label["utterances"] = []
+            with zipfile.ZipFile(labels, "w") as destination:
+                destination.writestr(
+                    "/record-a.json", json.dumps(label, ensure_ascii=False)
+                )
+            stats = inspect_archive_pair(audio, labels, "training")
+            self.assertEqual(1, stats.schema_error_count)
+
+    def test_rejects_invalid_or_out_of_bounds_utterance_timestamps(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            audio, labels = write_pair(root, "train", "record-a", "event-a")
+            with zipfile.ZipFile(labels, "r") as source:
+                label = json.loads(source.read("/record-a.json"))
+            label["utterances"] = [
+                {
+                    "id": "reversed",
+                    "startAt": 50,
+                    "endAt": 50,
+                    "text": "잘못된 구간",
+                    "speaker": 1,
+                },
+                {
+                    "id": "outside",
+                    "startAt": 0,
+                    "endAt": 101,
+                    "text": "음성 밖 구간",
+                    "speaker": 1,
+                },
+            ]
+            with zipfile.ZipFile(labels, "w") as destination:
+                destination.writestr(
+                    "/record-a.json", json.dumps(label, ensure_ascii=False)
+                )
+            stats = inspect_archive_pair(audio, labels, "training")
+            self.assertEqual(2, stats.schema_error_count)
+
     def test_detects_truncated_wav_payload(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

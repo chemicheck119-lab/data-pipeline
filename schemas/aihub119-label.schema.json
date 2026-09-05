@@ -17,13 +17,14 @@
     "recordId": {"type": "string", "minLength": 1},
     "utterances": {
       "type": "array",
+      "minItems": 1,
       "items": {
         "type": "object",
         "required": ["id", "startAt", "endAt", "text", "speaker"],
         "properties": {
           "id": {"type": "string", "minLength": 1},
-          "startAt": {"type": "integer"},
-          "endAt": {"type": "integer"},
+          "startAt": {"type": "integer", "minimum": 0},
+          "endAt": {"type": "integer", "minimum": 1},
           "text": {"type": "string"},
           "speaker": {"type": "integer"}
         }

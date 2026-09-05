@@ -133,6 +133,7 @@ def inspect_archive_pair(
     empty_utterance_count = 0
     transcript_character_count = 0
     durations: list[float] = []
+    audio_frame_bounds: dict[str, tuple[int, int]] = {}
     sample_rates: set[int] = set()
     channel_counts: set[int] = set()
     sample_widths: set[int] = set()
@@ -150,7 +151,7 @@ def inspect_archive_pair(
         audio_members, duplicate_audio_stems = _members_by_stem(audio_zip, ".wav")
         label_members, duplicate_label_stems = _members_by_stem(label_zip, ".json")
 
-        for name in audio_members.values():
+        for stem, name in audio_members.items():
             try:
                 audio_bytes = audio_zip.read(name)
                 with wave.open(io.BytesIO(audio_bytes)) as audio:
@@ -175,6 +176,7 @@ def inspect_archive_pair(
                     ):
                         schema_errors += 1
                     else:
+                        audio_frame_bounds[stem] = (rate, frames)
                         # The ASR model receives decoded samples, not RIFF headers.
                         # Include the signal format so equal bytes with a different
                         # interpretation are not treated as the same model input.
@@ -187,7 +189,7 @@ def inspect_archive_pair(
             except (EOFError, wave.Error, zipfile.BadZipFile):
                 schema_errors += 1
 
-        for name in label_members.values():
+        for stem, name in label_members.items():
             try:
                 document = json.loads(label_zip.read(name).decode("utf-8-sig"))
             except (UnicodeDecodeError, json.JSONDecodeError):
@@ -224,6 +226,19 @@ def inspect_archive_pair(
                 missing_required_fields += len(
                     REQUIRED_UTTERANCE_FIELDS - utterance.keys()
                 )
+                start_at = utterance.get("startAt")
+                end_at = utterance.get("endAt")
+                bounds = audio_frame_bounds.get(stem)
+                if bounds is not None:
+                    timing_is_valid = (
+                        type(start_at) is int
+                        and type(end_at) is int
+                        and start_at >= 0
+                        and end_at > start_at
+                        and end_at * bounds[0] <= bounds[1] * 1000
+                    )
+                    if not timing_is_valid:
+                        schema_errors += 1
                 text = utterance.get("text")
                 if not isinstance(text, str):
                     continue
