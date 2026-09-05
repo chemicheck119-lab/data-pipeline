@@ -67,6 +67,36 @@ PYTHONPATH=src python -m chemicheck119_data.aihub119_evaluation \
 결과를 보기 전에 지역명·모델 설정·우선용어 목록을 고정합니다. 원본과 전사문은 Git에
 저장하지 않고 archive 해시·통계·검증 결과만 manifest에 남깁니다.
 
+## 모의 통신 왜곡 파생 데이터
+
+교차지역 원본 기준선을 먼저 측정한 뒤, 같은 Validation 레코드에 `radio-sim-v1` 변형을
+적용할 수 있습니다. 전체 데이터를 18배 복제하지 않도록 우선용어 포함·미포함 레코드를
+각각 최대 20건씩 고정 해시로 선택합니다. 이 표본은 우선용어 강건성과 false insertion을
+함께 보기 위한 의도적 층화 표본이며 모집단 비율을 대표하지 않습니다.
+
+```bash
+PYTHONPATH=src python -m chemicheck119_data.radio_simulation \
+  --audio-archive /secure/VS_서울_화재.zip \
+  --label-archive /secure/VL_서울_화재.zip \
+  --source-manifest /secure/aihub-71768-seoul-fire-validation.json \
+  --priority-terms ../speech-service/config/domain_hotwords.txt \
+  --output-dir /secure/derived/seoul-radio-sim-v1 \
+  --artifact-prefix gs://PRIVATE_BUCKET/derived/aihub/71768/seoul-fire/radio-sim-v1 \
+  --positive-records 20 --negative-records 20 --seed 119
+```
+
+고정 프로필은 깨끗한 대조군, 8kHz·300–3400Hz 대역 제한, 수학적 8-bit μ-law,
+사이렌·차량·바람 절차적 잡음의 SNR 20/10/0dB, 송신 시작·종료 300ms 잘림,
+-12dBFS 하드 클리핑, -18dB 음량 저하, 3×120ms 끊김, 복합 스트레스 조건을 만듭니다.
+원본 ID·원본/산출물 SHA-256·변환 파라미터·레코드별 seed는
+`provenance.private.jsonl`에 기록합니다. 이 파일과 음성·라벨 ZIP은 비공개 저장소에만
+둡니다. Git에는 필요한 경우 개인정보가 없는 파생 manifest와 집계 결과만 추가합니다.
+
+사이렌·차량·바람은 실제 현장 녹음이 아닌 절차적 신호이며, μ-law도 특정 무전기 코덱의
+bit-exact 구현이 아닙니다. 결과는 반드시 **모의 통신 왜곡 평가**로 부르고 현장 무전
+검증이라고 표현하지 않습니다. 자세한 사전 조건은
+[모의 통신 왜곡 평가 계획](docs/모의_통신_왜곡_평가_계획.md)에 기록했습니다.
+
 ## 현재 상태
 
 | 항목 | 상태 |
@@ -74,6 +104,8 @@ PYTHONPATH=src python -m chemicheck119_data.aihub119_evaluation \
 | 저장소·정책 CI 골격 | 구현 완료 |
 | AIHub 신고음성 manifest 생성기 | 구현 완료 |
 | 광주 화재 Training 659건·Validation 77건 검사 | 로컬 실행 완료 |
+| 원본 보존형 `radio-sim-v1` 생성·provenance 하네스 | 부분 구현 또는 개발용 데모 |
+| 서울·인천 실제 파생 데이터 생성·STT 평가 | 설계 완료·실행 전 |
 | STT train/dev/test 분할 | AIHub 제공 Training/Validation 사용; 별도 test 미구성 |
 | 실제 현장 무전 데이터 | 확보 불가·검증되지 않음 |
 

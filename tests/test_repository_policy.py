@@ -501,6 +501,42 @@ class RepositoryPolicyTest(unittest.TestCase):
         errors = POLICY.evaluation_usage_errors(manifest, "manifest:")
         self.assertTrue(any("record_count 442" in error for error in errors))
 
+    def test_accepts_bound_cross_region_speech_evaluation(self) -> None:
+        manifest = {
+            "dataset_id": "aihub_71768_seoul_fire",
+            "usage_role": "evaluation",
+            "split": {"name": "Validation", "parameters": {"used_for_tuning": False}},
+            "evaluation": {
+                "id": "speech_aihub_71768_seoul_fire_validation_123",
+                "record_count": 123,
+            },
+        }
+        self.assertEqual([], POLICY.evaluation_usage_errors(manifest, "manifest:"))
+
+        manifest["dataset_id"] = "aihub_71768_incheon_fire"
+        errors = POLICY.evaluation_usage_errors(manifest, "manifest:")
+        self.assertTrue(any("not a registered" in error for error in errors))
+
+    def test_accepts_bound_radio_simulation_evaluation(self) -> None:
+        dataset_id = "aihub_71768_seoul_fire_radio_sim_v1_siren_snr10"
+        manifest = {
+            "dataset_id": dataset_id,
+            "usage_role": "evaluation",
+            "split": {
+                "name": "Validation radio simulation",
+                "parameters": {"used_for_tuning": False},
+            },
+            "evaluation": {
+                "id": f"speech_{dataset_id}_40",
+                "record_count": 40,
+            },
+        }
+        self.assertEqual([], POLICY.evaluation_usage_errors(manifest, "manifest:"))
+
+        manifest["evaluation"]["record_count"] = 39
+        errors = POLICY.evaluation_usage_errors(manifest, "manifest:")
+        self.assertTrue(any("record_count 40" in error for error in errors))
+
     def test_integrity_report_must_not_predate_snapshot(self) -> None:
         manifest = {
             "created_at": "2026-09-05T02:00:00Z",
