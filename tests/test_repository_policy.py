@@ -24,6 +24,12 @@ class RepositoryPolicyTest(unittest.TestCase):
         tracked = POLICY.TrackedObject(Path("fixture/model.gguf"), 10)
         self.assertTrue(POLICY.violations([tracked]))
 
+    def test_rejects_multipart_tensorflow_checkpoints(self) -> None:
+        for filename in ("model.ckpt.index", "model.ckpt.data-00000-of-00001"):
+            with self.subTest(filename=filename):
+                tracked = POLICY.TrackedObject(Path("exports") / filename, 10)
+                self.assertTrue(POLICY.violations([tracked]))
+
     def test_rejects_keras_weight_formats(self) -> None:
         for filename in ("model.weights.h5", "model.hdf5", "model.keras"):
             with self.subTest(filename=filename):
@@ -65,6 +71,10 @@ class RepositoryPolicyTest(unittest.TestCase):
             with self.subTest(filename=filename):
                 tracked = POLICY.TrackedObject(Path(filename), 10)
                 self.assertTrue(POLICY.violations([tracked]))
+
+    def test_rejects_json_corpus_outside_allowlisted_paths(self) -> None:
+        tracked = POLICY.TrackedObject(Path("corpora/export.json"), 10)
+        self.assertTrue(POLICY.violations([tracked]))
 
     def test_commit_scan_keeps_every_path_for_identical_blobs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -233,9 +243,20 @@ class RepositoryPolicyTest(unittest.TestCase):
                             },
                             "duplicates": {"status": "passed", "count": 0},
                             "split_integrity": {
-                                "status": "passed",
-                                "overlap_count": 0,
-                                "dimensions": ["record"],
+                                "entities": {
+                                    "speaker": {
+                                        "status": "not_applicable",
+                                        "reason": "non-speech fixture",
+                                    },
+                                    "source": {
+                                        "status": "not_applicable",
+                                        "reason": "single generated source",
+                                    },
+                                    "event": {
+                                        "status": "not_applicable",
+                                        "reason": "no incident events",
+                                    },
+                                },
                             },
                             "source_drift": {
                                 "status": "not_applicable",
@@ -284,6 +305,34 @@ class RepositoryPolicyTest(unittest.TestCase):
             errors = POLICY.append_only_manifest_errors(base, repository)
             self.assertTrue(any("append-only" in error for error in errors))
 
+    def test_rejects_modifying_manifest_added_earlier_in_same_range(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory)
+            self._git(repository, "init", "-b", "main")
+            self._git(repository, "config", "user.name", "Policy Test")
+            self._git(
+                repository,
+                "config",
+                "user.email",
+                "policy" + "@example.invalid",
+            )
+            (repository / "README.md").write_text("base\n")
+            self._git(repository, "add", "README.md")
+            self._git(repository, "commit", "-m", "base")
+            base = self._git(repository, "rev-parse", "HEAD").stdout.strip()
+
+            manifest = repository / "data" / "manifests" / "new.json"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text("{}\n")
+            self._git(repository, "add", "data/manifests/new.json")
+            self._git(repository, "commit", "-m", "add manifest")
+            manifest.write_text('{"changed": true}\n')
+            self._git(repository, "add", "data/manifests/new.json")
+            self._git(repository, "commit", "-m", "modify new manifest")
+
+            errors = POLICY.append_only_manifest_errors(base, repository)
+            self.assertTrue(any("append-only" in error for error in errors))
+
     def test_rejects_fixture_without_metadata(self) -> None:
         tracked = POLICY.TrackedObject(Path("fixtures/users.csv"), 10)
         errors = POLICY.violations([tracked])
@@ -316,6 +365,43 @@ class RepositoryPolicyTest(unittest.TestCase):
                             "implementation": "tests.generate_fixture",
                             "version": "1.0.0",
                             "parameters": {},
+                            "seed": 119,
+                        },
+                    }
+                )
+            )
+            self._git(repository, "add", "fixtures")
+
+            objects = POLICY.current_tree_objects(repository)
+            self.assertEqual([], POLICY.violations(objects, repository))
+
+    def test_accepts_synthetic_audio_fixture_with_matching_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory)
+            self._git(repository, "init", "-b", "main")
+            fixture = repository / "fixtures" / "tone.wav"
+            fixture.parent.mkdir(parents=True)
+            fixture.write_bytes(b"RIFF-synthetic-test-audio")
+            digest = hashlib.sha256(fixture.read_bytes()).hexdigest()
+            metadata = fixture.with_name(fixture.name + ".fixture.json")
+            metadata.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "1.0.0",
+                        "classification": "synthetic",
+                        "contains_personal_data": False,
+                        "license": "CC0-1.0",
+                        "source": {
+                            "name": "unit-test tone generator",
+                            "url": "https://example.invalid/generator",
+                            "version": "1.0.0",
+                            "collected_at": "2026-09-05T00:00:00Z",
+                        },
+                        "sha256": digest,
+                        "generation": {
+                            "implementation": "tests.generate_tone",
+                            "version": "1.0.0",
+                            "parameters": {"frequency_hz": 440},
                             "seed": 119,
                         },
                     }

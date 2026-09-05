@@ -20,6 +20,7 @@ models/
 # Model weights
 *.bin
 *.ckpt
+*.ckpt.*
 *.ggml
 *.gguf
 *.h5
@@ -31,6 +32,7 @@ models/
 *.pth
 *.safetensors
 *.tflite
+**/checkpoints/
 
 # Audio corpora and recordings
 *.aac
@@ -42,6 +44,15 @@ models/
 *.opus
 *.wav
 *.wma
+!**/fixtures/**/*.aac
+!**/fixtures/**/*.aiff
+!**/fixtures/**/*.flac
+!**/fixtures/**/*.m4a
+!**/fixtures/**/*.mp3
+!**/fixtures/**/*.ogg
+!**/fixtures/**/*.opus
+!**/fixtures/**/*.wav
+!**/fixtures/**/*.wma
 
 # Source-document and archive dumps
 *.7z

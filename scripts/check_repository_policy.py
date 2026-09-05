@@ -66,6 +66,7 @@ DATASET_CONTENT_SUFFIXES = {
     ".csv",
     ".db",
     ".feather",
+    ".json",
     ".jsonl",
     ".ndjson",
     ".orc",
@@ -139,6 +140,7 @@ FORBIDDEN_OUTPUT_ROOTS = FORBIDDEN_DATA_ROOTS | {
     Path("outputs"),
 }
 FORBIDDEN_OUTPUT_DIRECTORY_NAMES = {"artifacts", "models", "outputs"}
+FORBIDDEN_MODEL_DIRECTORY_NAMES = {"checkpoints", "models"}
 ALLOWED_PLACEHOLDERS = {
     root / "README.md" for root in FORBIDDEN_OUTPUT_ROOTS
 }
@@ -290,6 +292,15 @@ def is_credential_path(path: Path) -> bool:
     )
 
 
+def is_model_weight(path: Path) -> bool:
+    name = path.name.lower()
+    return (
+        path.suffix.lower() in FORBIDDEN_WEIGHT_SUFFIXES
+        or ".ckpt." in name
+        or any(part.lower() in FORBIDDEN_MODEL_DIRECTORY_NAMES for part in path.parts[:-1])
+    )
+
+
 def blob_content(
     tracked: TrackedObject,
     repository: Path,
@@ -394,20 +405,32 @@ def integrity_report_errors(report: object, prefix: str) -> list[str]:
     if not isinstance(split_integrity, dict):
         errors.append(f"{prefix}.split_integrity must be an object")
     else:
-        if split_integrity.get("status") != "passed" or split_integrity.get(
-            "overlap_count"
-        ) != 0:
-            errors.append(
-                f"{prefix}.split_integrity must report passed with overlap_count 0"
-            )
-        dimensions = split_integrity.get("dimensions")
-        if not isinstance(dimensions, list) or not dimensions or not all(
-            isinstance(dimension, str) and dimension.strip()
-            for dimension in dimensions
-        ):
-            errors.append(
-                f"{prefix}.split_integrity.dimensions must be a non-empty string array"
-            )
+        entities = split_integrity.get("entities")
+        if not isinstance(entities, dict):
+            errors.append(f"{prefix}.split_integrity.entities must be an object")
+        else:
+            for entity in ("speaker", "source", "event"):
+                result = entities.get(entity)
+                entity_prefix = f"{prefix}.split_integrity.entities.{entity}"
+                if not isinstance(result, dict):
+                    errors.append(f"{entity_prefix} must be an object")
+                    continue
+                status = result.get("status")
+                if status not in {"passed", "not_applicable"}:
+                    errors.append(
+                        f"{entity_prefix}.status must be passed or not_applicable"
+                    )
+                if status == "passed" and result.get("overlap_count") != 0:
+                    errors.append(
+                        f"{entity_prefix}.overlap_count must be 0 when passed"
+                    )
+                if status == "not_applicable" and (
+                    not isinstance(result.get("reason"), str)
+                    or not result["reason"].strip()
+                ):
+                    errors.append(
+                        f"{entity_prefix}.reason is required when not_applicable"
+                    )
 
     source_drift = report.get("source_drift")
     if not isinstance(source_drift, dict):
@@ -526,34 +549,52 @@ def manifest_errors(
 def append_only_manifest_errors(
     base_ref: str, repository: Path = Path(".")
 ) -> list[str]:
-    result = subprocess.run(
-        [
-            "git",
-            "diff",
-            "--name-status",
-            "-z",
-            "--no-renames",
-            base_ref,
-            "HEAD",
-            "--",
-            str(MANIFEST_ROOT),
-        ],
+    commit_result = subprocess.run(
+        ["git", "rev-list", "--reverse", f"{base_ref}..HEAD"],
         check=True,
         capture_output=True,
+        text=True,
         cwd=repository,
     )
-    fields = result.stdout.split(b"\0")
     errors: list[str] = []
-    for index in range(0, len(fields) - 1, 2):
-        status = fields[index].decode("ascii", errors="replace")
-        raw_path = fields[index + 1]
-        if not status or not raw_path:
-            continue
-        path = Path(raw_path.decode("utf-8", errors="surrogateescape"))
-        if is_manifest_path(path) and status != "A":
-            errors.append(
-                f"published dataset manifests are append-only ({status}): {path}"
+    for commit in commit_result.stdout.splitlines():
+        parent_result = subprocess.run(
+            ["git", "rev-list", "--parents", "-n", "1", commit],
+            check=True,
+            capture_output=True,
+            text=True,
+            cwd=repository,
+        )
+        parents = parent_result.stdout.strip().split()[1:]
+        for parent in parents:
+            diff_result = subprocess.run(
+                [
+                    "git",
+                    "diff",
+                    "--name-status",
+                    "-z",
+                    "--no-renames",
+                    parent,
+                    commit,
+                    "--",
+                    str(MANIFEST_ROOT),
+                ],
+                check=True,
+                capture_output=True,
+                cwd=repository,
             )
+            fields = diff_result.stdout.split(b"\0")
+            for index in range(0, len(fields) - 1, 2):
+                status = fields[index].decode("ascii", errors="replace")
+                raw_path = fields[index + 1]
+                if not status or not raw_path:
+                    continue
+                path = Path(raw_path.decode("utf-8", errors="surrogateescape"))
+                if is_manifest_path(path) and status != "A":
+                    errors.append(
+                        "published dataset manifests are append-only "
+                        f"({status} in {commit[:12]}): {path}"
+                    )
     return errors
 
 
@@ -648,6 +689,12 @@ def fixture_errors(
     return errors
 
 
+def is_approved_dataset_content_path(path: Path) -> bool:
+    if is_fixture_payload(path) or is_fixture_metadata(path) or is_manifest_path(path):
+        return True
+    return path.suffix.lower() == ".json" and "schemas" in path.parts[:-1]
+
+
 def violations(
     objects: list[TrackedObject], repository: Path = Path(".")
 ) -> list[str]:
@@ -655,17 +702,26 @@ def violations(
     blob_cache: dict[str, bytes] = {}
     object_lookup = {(tracked.revision, tracked.path): tracked for tracked in objects}
     for tracked in objects:
+        fixture_validation_errors = fixture_errors(
+            tracked, object_lookup, repository, blob_cache
+        )
+        is_approved_fixture = (
+            is_fixture_payload(tracked.path) and not fixture_validation_errors
+        )
         if tracked.object_type == "blob" and tracked.size > MAX_TRACKED_BYTES:
             errors.append(f"tracked file exceeds 10 MiB: {tracked.path}")
-        if tracked.path.suffix.lower() in FORBIDDEN_WEIGHT_SUFFIXES:
+        if is_model_weight(tracked.path):
             errors.append(f"model weight must not be tracked: {tracked.path}")
-        if tracked.path.suffix.lower() in FORBIDDEN_AUDIO_SUFFIXES:
+        if (
+            tracked.path.suffix.lower() in FORBIDDEN_AUDIO_SUFFIXES
+            and not is_approved_fixture
+        ):
             errors.append(f"audio data must not be tracked: {tracked.path}")
         if tracked.path.suffix.lower() in FORBIDDEN_DOCUMENT_ARCHIVE_SUFFIXES:
             errors.append(f"source document or archive must not be tracked: {tracked.path}")
         if (
             tracked.path.suffix.lower() in DATASET_CONTENT_SUFFIXES
-            and not is_fixture_payload(tracked.path)
+            and not is_approved_dataset_content_path(tracked.path)
         ):
             errors.append(
                 f"dataset content must be stored outside Git or as an approved fixture: {tracked.path}"
@@ -679,9 +735,7 @@ def violations(
         for label in personal_data_labels(tracked, repository, blob_cache):
             errors.append(f"possible {label} detected in tracked blob: {tracked.path}")
         errors.extend(manifest_errors(tracked, repository, blob_cache))
-        errors.extend(
-            fixture_errors(tracked, object_lookup, repository, blob_cache)
-        )
+        errors.extend(fixture_validation_errors)
         is_allowed_placeholder = (
             tracked.object_type == "blob" and tracked.path in ALLOWED_PLACEHOLDERS
         )
