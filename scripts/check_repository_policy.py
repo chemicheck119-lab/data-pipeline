@@ -1,0 +1,727 @@
+"""Reject large artifacts, restricted data, and common secrets from Git history."""
+
+import argparse
+from dataclasses import dataclass
+from datetime import datetime
+import hashlib
+import json
+from pathlib import Path
+import re
+import subprocess
+import sys
+from typing import Optional
+
+
+MAX_TRACKED_BYTES = 10 * 1024 * 1024
+FORBIDDEN_WEIGHT_SUFFIXES = {
+    ".bin",
+    ".ckpt",
+    ".ggml",
+    ".gguf",
+    ".h5",
+    ".hdf5",
+    ".keras",
+    ".onnx",
+    ".pb",
+    ".pt",
+    ".pth",
+    ".safetensors",
+    ".tflite",
+}
+FORBIDDEN_AUDIO_SUFFIXES = {
+    ".aac",
+    ".aiff",
+    ".flac",
+    ".m4a",
+    ".mp3",
+    ".ogg",
+    ".opus",
+    ".wav",
+    ".wma",
+}
+FORBIDDEN_DOCUMENT_ARCHIVE_SUFFIXES = {
+    ".7z",
+    ".bz2",
+    ".doc",
+    ".docx",
+    ".gz",
+    ".odf",
+    ".odp",
+    ".ods",
+    ".odt",
+    ".pdf",
+    ".ppt",
+    ".pptx",
+    ".rar",
+    ".rtf",
+    ".tar",
+    ".tgz",
+    ".xls",
+    ".xlsx",
+    ".xz",
+    ".zip",
+}
+DATASET_CONTENT_SUFFIXES = {
+    ".avro",
+    ".csv",
+    ".db",
+    ".feather",
+    ".jsonl",
+    ".ndjson",
+    ".orc",
+    ".parquet",
+    ".sql",
+    ".sqlite",
+    ".tsv",
+    ".xml",
+}
+FORBIDDEN_CREDENTIAL_NAMES = {
+    "credentials.json",
+    "credentials.yaml",
+    "credentials.yml",
+    "id_dsa",
+    "id_ecdsa",
+    "id_ed25519",
+    "id_rsa",
+    "service-account.json",
+}
+FORBIDDEN_CREDENTIAL_SUFFIXES = {
+    ".jks",
+    ".kdbx",
+    ".key",
+    ".keystore",
+    ".p12",
+    ".pem",
+    ".pfx",
+}
+SECRET_CONTENT_PATTERNS = (
+    (
+        "private key",
+        re.compile(
+            br"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----"
+        ),
+    ),
+    ("AWS access key", re.compile(br"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
+    ("GitHub token", re.compile(br"\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,})\b")),
+    ("OpenAI API key", re.compile(br"\bsk-[A-Za-z0-9_-]{20,}\b")),
+    (
+        "signed download URL",
+        re.compile(
+            br"https?://[^\s\"'<>]{1,4096}[?&]"
+            br"(?:X-Amz-Signature|X-Goog-Signature|Signature|sig)="
+            br"[A-Za-z0-9%+/=_-]{16,}",
+            re.IGNORECASE,
+        ),
+    ),
+)
+PERSONAL_DATA_PATTERNS = (
+    (
+        "email address",
+        re.compile(br"\b[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"),
+    ),
+    (
+        "Korean phone number",
+        re.compile(br"\b(?:\+?82[- ]?)?0?1[016789][- ]?[0-9]{3,4}[- ]?[0-9]{4}\b"),
+    ),
+    (
+        "Korean resident registration number",
+        re.compile(br"\b[0-9]{6}-[1-8][0-9]{6}\b"),
+    ),
+)
+FORBIDDEN_DATA_ROOTS = {
+    Path("data/raw"),
+    Path("data/interim"),
+    Path("data/processed"),
+}
+FORBIDDEN_OUTPUT_ROOTS = FORBIDDEN_DATA_ROOTS | {
+    Path("artifacts"),
+    Path("models"),
+    Path("outputs"),
+}
+FORBIDDEN_OUTPUT_DIRECTORY_NAMES = {"artifacts", "models", "outputs"}
+ALLOWED_PLACEHOLDERS = {
+    root / "README.md" for root in FORBIDDEN_OUTPUT_ROOTS
+}
+MANIFEST_ROOT = Path("data/manifests")
+MANIFEST_CLASSIFICATIONS = {"approved_restricted", "derived", "public", "synthetic"}
+SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$", re.IGNORECASE)
+FIXTURE_METADATA_SUFFIX = ".fixture.json"
+FIXTURE_CLASSIFICATIONS = {"public_redistributable", "synthetic"}
+
+
+@dataclass(frozen=True)
+class TrackedObject:
+    path: Path
+    size: int
+    object_id: Optional[str] = None
+    object_type: str = "blob"
+    revision: str = "manual"
+
+
+def current_tree_objects(repository: Path = Path(".")) -> list[TrackedObject]:
+    """Read staged paths and blob sizes from the Git index."""
+    result = subprocess.run(
+        ["git", "ls-files", "-s", "-z"],
+        check=True,
+        capture_output=True,
+        cwd=repository,
+    )
+    objects: list[TrackedObject] = []
+    for record in result.stdout.split(b"\0"):
+        if not record:
+            continue
+        metadata, separator, raw_path = record.partition(b"\t")
+        fields = metadata.split()
+        if not separator or len(fields) != 3 or fields[2] != b"0":
+            continue
+        mode = fields[0]
+        object_id = fields[1].decode("ascii")
+        object_type = "commit" if mode == b"160000" else "blob"
+        if object_type == "blob":
+            size = int(
+                subprocess.run(
+                    ["git", "cat-file", "-s", object_id],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    cwd=repository,
+                ).stdout.strip()
+            )
+        else:
+            size = 0
+        path = raw_path.decode("utf-8", errors="surrogateescape")
+        objects.append(
+            TrackedObject(
+                path=Path(path),
+                size=size,
+                object_id=object_id,
+                object_type=object_type,
+                revision="INDEX",
+            )
+        )
+    return objects
+
+
+def revision_objects(
+    revision: str, repository: Path = Path(".")
+) -> list[TrackedObject]:
+    """Return every file path present in every commit selected by ``revision``.
+
+    ``git rev-list --objects`` cannot be used as a path inventory because its path
+    field is only an indeterminate hint for an object.  Listing each commit tree
+    preserves every path, including two paths that point at the same blob and a
+    restricted file that is deleted by a later commit in the pull request.
+    """
+    commit_result = subprocess.run(
+        ["git", "rev-list", "--reverse", revision],
+        check=True,
+        capture_output=True,
+        text=True,
+        cwd=repository,
+    )
+    objects: list[TrackedObject] = []
+    seen: set[tuple[str, str, str]] = set()
+    for commit in commit_result.stdout.splitlines():
+        tree_result = subprocess.run(
+            ["git", "ls-tree", "-rlz", "--full-tree", commit],
+            check=True,
+            capture_output=True,
+            cwd=repository,
+        )
+        for record in tree_result.stdout.split(b"\0"):
+            if not record:
+                continue
+            metadata, separator, raw_path = record.partition(b"\t")
+            if not separator:
+                continue
+            fields = metadata.split()
+            if len(fields) != 4 or fields[1] == b"tree":
+                continue
+            object_id = fields[2].decode("ascii")
+            path = raw_path.decode("utf-8", errors="surrogateescape")
+            key = (commit, object_id, path)
+            if key in seen:
+                continue
+            seen.add(key)
+            object_type = fields[1].decode("ascii")
+            size = int(fields[3]) if fields[3] != b"-" else 0
+            objects.append(
+                TrackedObject(
+                    path=Path(path),
+                    size=size,
+                    object_id=object_id,
+                    object_type=object_type,
+                    revision=commit,
+                )
+            )
+    return objects
+
+
+def commit_range_objects(
+    base_ref: str, repository: Path = Path(".")
+) -> list[TrackedObject]:
+    return revision_objects(f"{base_ref}..HEAD", repository)
+
+
+def reachable_commit_objects(repository: Path = Path(".")) -> list[TrackedObject]:
+    return revision_objects("HEAD", repository)
+
+
+def is_forbidden_output(path: Path) -> bool:
+    below_data_root = any(
+        root == path or root in path.parents for root in FORBIDDEN_DATA_ROOTS
+    )
+    below_named_output_directory = any(
+        part in FORBIDDEN_OUTPUT_DIRECTORY_NAMES for part in path.parts[:-1]
+    )
+    return below_data_root or below_named_output_directory
+
+
+def is_environment_secret(path: Path) -> bool:
+    name = path.name
+    return name != ".env.example" and (name == ".env" or name.startswith(".env."))
+
+
+def is_credential_path(path: Path) -> bool:
+    return (
+        ".ssh" in path.parts
+        or path.name.lower() in FORBIDDEN_CREDENTIAL_NAMES
+        or path.suffix.lower() in FORBIDDEN_CREDENTIAL_SUFFIXES
+    )
+
+
+def blob_content(
+    tracked: TrackedObject,
+    repository: Path,
+    blob_cache: dict[str, bytes],
+) -> Optional[bytes]:
+    if (
+        tracked.object_type != "blob"
+        or tracked.object_id is None
+        or tracked.size > MAX_TRACKED_BYTES
+    ):
+        return None
+    content = blob_cache.get(tracked.object_id)
+    if content is None:
+        content = subprocess.run(
+            ["git", "cat-file", "blob", tracked.object_id],
+            check=True,
+            capture_output=True,
+            cwd=repository,
+        ).stdout
+        blob_cache[tracked.object_id] = content
+    return content
+
+
+def secret_labels(
+    tracked: TrackedObject,
+    repository: Path,
+    blob_cache: dict[str, bytes],
+) -> list[str]:
+    content = blob_content(tracked, repository, blob_cache)
+    if content is None:
+        return []
+    return [label for label, pattern in SECRET_CONTENT_PATTERNS if pattern.search(content)]
+
+
+def personal_data_labels(
+    tracked: TrackedObject,
+    repository: Path,
+    blob_cache: dict[str, bytes],
+) -> list[str]:
+    content = blob_content(tracked, repository, blob_cache)
+    if content is None:
+        return []
+    return [
+        label for label, pattern in PERSONAL_DATA_PATTERNS if pattern.search(content)
+    ]
+
+
+def is_manifest_path(path: Path) -> bool:
+    return MANIFEST_ROOT in path.parents and path.name != "README.md"
+
+
+def is_iso8601_timestamp(value: object) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return parsed.tzinfo is not None
+
+
+def recipe_errors(recipe: object, prefix: str) -> list[str]:
+    if not isinstance(recipe, dict):
+        return [f"{prefix} must be an object"]
+    errors: list[str] = []
+    for field in ("implementation", "version"):
+        if not isinstance(recipe.get(field), str) or not recipe[field].strip():
+            errors.append(f"{prefix}.{field} must be a non-empty string")
+    if not isinstance(recipe.get("parameters"), dict):
+        errors.append(f"{prefix}.parameters must be an object")
+    return errors
+
+
+def integrity_report_errors(report: object, prefix: str) -> list[str]:
+    if not isinstance(report, dict):
+        return [f"{prefix} must be an object"]
+    errors: list[str] = []
+    if not isinstance(report.get("schema_version"), str) or not report[
+        "schema_version"
+    ].strip():
+        errors.append(f"{prefix}.schema_version must be a non-empty string")
+    if not is_iso8601_timestamp(report.get("generated_at")):
+        errors.append(f"{prefix}.generated_at must be an ISO-8601 timestamp with timezone")
+
+    required_fields = report.get("required_fields")
+    if not isinstance(required_fields, dict):
+        errors.append(f"{prefix}.required_fields must be an object")
+    elif required_fields.get("status") != "passed" or required_fields.get(
+        "missing_count"
+    ) != 0:
+        errors.append(
+            f"{prefix}.required_fields must report passed with missing_count 0"
+        )
+
+    duplicates = report.get("duplicates")
+    if not isinstance(duplicates, dict):
+        errors.append(f"{prefix}.duplicates must be an object")
+    elif duplicates.get("status") != "passed" or duplicates.get("count") != 0:
+        errors.append(f"{prefix}.duplicates must report passed with count 0")
+
+    split_integrity = report.get("split_integrity")
+    if not isinstance(split_integrity, dict):
+        errors.append(f"{prefix}.split_integrity must be an object")
+    else:
+        if split_integrity.get("status") != "passed" or split_integrity.get(
+            "overlap_count"
+        ) != 0:
+            errors.append(
+                f"{prefix}.split_integrity must report passed with overlap_count 0"
+            )
+        dimensions = split_integrity.get("dimensions")
+        if not isinstance(dimensions, list) or not dimensions or not all(
+            isinstance(dimension, str) and dimension.strip()
+            for dimension in dimensions
+        ):
+            errors.append(
+                f"{prefix}.split_integrity.dimensions must be a non-empty string array"
+            )
+
+    source_drift = report.get("source_drift")
+    if not isinstance(source_drift, dict):
+        errors.append(f"{prefix}.source_drift must be an object")
+    else:
+        if source_drift.get("status") not in {"passed", "not_applicable"}:
+            errors.append(
+                f"{prefix}.source_drift.status must be passed or not_applicable"
+            )
+        changes_detected = source_drift.get("changes_detected")
+        if not isinstance(changes_detected, int) or isinstance(
+            changes_detected, bool
+        ) or changes_detected < 0:
+            errors.append(
+                f"{prefix}.source_drift.changes_detected must be a non-negative integer"
+            )
+    return errors
+
+
+def manifest_errors(
+    tracked: TrackedObject,
+    repository: Path,
+    blob_cache: dict[str, bytes],
+) -> list[str]:
+    if not is_manifest_path(tracked.path):
+        return []
+    prefix = f"invalid dataset manifest {tracked.path}:"
+    if tracked.path.suffix.lower() != ".json":
+        return [f"{prefix} only JSON manifests are supported"]
+    content = blob_content(tracked, repository, blob_cache)
+    if content is None:
+        return [f"{prefix} content is unavailable for validation"]
+    try:
+        manifest = json.loads(content.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        return [f"{prefix} malformed UTF-8 JSON ({error})"]
+    if not isinstance(manifest, dict):
+        return [f"{prefix} root must be a JSON object"]
+
+    errors: list[str] = []
+    for field in ("schema_version", "dataset_id", "dataset_version"):
+        if not isinstance(manifest.get(field), str) or not manifest[field].strip():
+            errors.append(f"{prefix} {field} must be a non-empty string")
+    if not is_iso8601_timestamp(manifest.get("created_at")):
+        errors.append(f"{prefix} created_at must be an ISO-8601 timestamp with timezone")
+
+    classification = manifest.get("classification")
+    if classification not in MANIFEST_CLASSIFICATIONS:
+        allowed = ", ".join(sorted(MANIFEST_CLASSIFICATIONS))
+        errors.append(f"{prefix} classification must be one of: {allowed}")
+
+    source = manifest.get("source")
+    if not isinstance(source, dict):
+        errors.append(f"{prefix} source must be an object")
+    else:
+        for field in ("name", "url", "license", "version"):
+            if not isinstance(source.get(field), str) or not source[field].strip():
+                errors.append(f"{prefix} source.{field} must be a non-empty string")
+        if not is_iso8601_timestamp(source.get("collected_at")):
+            errors.append(
+                f"{prefix} source.collected_at must be an ISO-8601 timestamp with timezone"
+            )
+
+    split = manifest.get("split")
+    if not isinstance(split, dict):
+        errors.append(f"{prefix} split must be an object")
+    else:
+        for field in ("name", "strategy", "unit"):
+            if not isinstance(split.get(field), str) or not split[field].strip():
+                errors.append(f"{prefix} split.{field} must be a non-empty string")
+        if not isinstance(split.get("parameters"), dict):
+            errors.append(f"{prefix} split.parameters must be an object")
+        seed = split.get("seed")
+        if seed is not None and (not isinstance(seed, int) or isinstance(seed, bool)):
+            errors.append(f"{prefix} split.seed must be an integer or null")
+
+    if classification == "derived":
+        errors.extend(
+            recipe_errors(manifest.get("preprocessing"), f"{prefix} preprocessing")
+        )
+    if classification == "synthetic":
+        generation = manifest.get("generation")
+        errors.extend(recipe_errors(generation, f"{prefix} generation"))
+        if isinstance(generation, dict):
+            seed = generation.get("seed")
+            if not isinstance(seed, int) or isinstance(seed, bool):
+                errors.append(f"{prefix} generation.seed must be an integer")
+
+    errors.extend(
+        integrity_report_errors(
+            manifest.get("integrity_report"), f"{prefix} integrity_report"
+        )
+    )
+
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, list) or not artifacts:
+        errors.append(f"{prefix} artifacts must be a non-empty array")
+    else:
+        for index, artifact in enumerate(artifacts):
+            item_prefix = f"{prefix} artifacts[{index}]"
+            if not isinstance(artifact, dict):
+                errors.append(f"{item_prefix} must be an object")
+                continue
+            if not isinstance(artifact.get("path"), str) or not artifact["path"].strip():
+                errors.append(f"{item_prefix}.path must be a non-empty string")
+            else:
+                artifact_path = Path(artifact["path"])
+                if artifact_path.is_absolute() or ".." in artifact_path.parts:
+                    errors.append(f"{item_prefix}.path must be repository-relative")
+            sha256 = artifact.get("sha256")
+            if not isinstance(sha256, str) or not SHA256_PATTERN.fullmatch(sha256):
+                errors.append(f"{item_prefix}.sha256 must be 64 hexadecimal characters")
+    return errors
+
+
+def append_only_manifest_errors(
+    base_ref: str, repository: Path = Path(".")
+) -> list[str]:
+    result = subprocess.run(
+        [
+            "git",
+            "diff",
+            "--name-status",
+            "-z",
+            "--no-renames",
+            base_ref,
+            "HEAD",
+            "--",
+            str(MANIFEST_ROOT),
+        ],
+        check=True,
+        capture_output=True,
+        cwd=repository,
+    )
+    fields = result.stdout.split(b"\0")
+    errors: list[str] = []
+    for index in range(0, len(fields) - 1, 2):
+        status = fields[index].decode("ascii", errors="replace")
+        raw_path = fields[index + 1]
+        if not status or not raw_path:
+            continue
+        path = Path(raw_path.decode("utf-8", errors="surrogateescape"))
+        if is_manifest_path(path) and status != "A":
+            errors.append(
+                f"published dataset manifests are append-only ({status}): {path}"
+            )
+    return errors
+
+
+def is_fixture_metadata(path: Path) -> bool:
+    return path.name.endswith(FIXTURE_METADATA_SUFFIX)
+
+
+def is_fixture_payload(path: Path) -> bool:
+    return (
+        "fixtures" in path.parts[:-1]
+        and path.name != "README.md"
+        and not is_fixture_metadata(path)
+    )
+
+
+def fixture_metadata_path(path: Path) -> Path:
+    return path.with_name(path.name + FIXTURE_METADATA_SUFFIX)
+
+
+def fixture_errors(
+    tracked: TrackedObject,
+    object_lookup: dict[tuple[str, Path], TrackedObject],
+    repository: Path,
+    blob_cache: dict[str, bytes],
+) -> list[str]:
+    if not is_fixture_payload(tracked.path):
+        return []
+    prefix = f"invalid fixture {tracked.path}:"
+    errors: list[str] = []
+    content = blob_content(tracked, repository, blob_cache)
+
+    metadata_path = fixture_metadata_path(tracked.path)
+    metadata_object = object_lookup.get((tracked.revision, metadata_path))
+    if metadata_object is None:
+        errors.append(f"{prefix} missing companion {metadata_path}")
+        return errors
+    metadata_content = blob_content(metadata_object, repository, blob_cache)
+    if metadata_content is None:
+        errors.append(f"{prefix} fixture metadata is unavailable")
+        return errors
+    try:
+        metadata = json.loads(metadata_content.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        errors.append(f"{prefix} malformed fixture metadata ({error})")
+        return errors
+    if not isinstance(metadata, dict):
+        errors.append(f"{prefix} fixture metadata root must be an object")
+        return errors
+
+    if not isinstance(metadata.get("schema_version"), str) or not metadata[
+        "schema_version"
+    ].strip():
+        errors.append(f"{prefix} metadata.schema_version must be a non-empty string")
+    classification = metadata.get("classification")
+    if classification not in FIXTURE_CLASSIFICATIONS:
+        allowed = ", ".join(sorted(FIXTURE_CLASSIFICATIONS))
+        errors.append(f"{prefix} metadata.classification must be one of: {allowed}")
+    if metadata.get("contains_personal_data") is not False:
+        errors.append(f"{prefix} metadata.contains_personal_data must be false")
+    if not isinstance(metadata.get("license"), str) or not metadata["license"].strip():
+        errors.append(f"{prefix} metadata.license must be a non-empty string")
+
+    source = metadata.get("source")
+    if not isinstance(source, dict):
+        errors.append(f"{prefix} metadata.source must be an object")
+    else:
+        for field in ("name", "url", "version"):
+            if not isinstance(source.get(field), str) or not source[field].strip():
+                errors.append(
+                    f"{prefix} metadata.source.{field} must be a non-empty string"
+                )
+        if not is_iso8601_timestamp(source.get("collected_at")):
+            errors.append(
+                f"{prefix} metadata.source.collected_at must be an ISO-8601 timestamp with timezone"
+            )
+
+    declared_sha256 = metadata.get("sha256")
+    if not isinstance(declared_sha256, str) or not SHA256_PATTERN.fullmatch(
+        declared_sha256
+    ):
+        errors.append(f"{prefix} metadata.sha256 must be 64 hexadecimal characters")
+    elif content is not None and hashlib.sha256(content).hexdigest() != declared_sha256.lower():
+        errors.append(f"{prefix} metadata.sha256 does not match the fixture blob")
+
+    if classification == "synthetic":
+        generation = metadata.get("generation")
+        errors.extend(recipe_errors(generation, f"{prefix} metadata.generation"))
+        if isinstance(generation, dict):
+            seed = generation.get("seed")
+            if not isinstance(seed, int) or isinstance(seed, bool):
+                errors.append(f"{prefix} metadata.generation.seed must be an integer")
+    return errors
+
+
+def violations(
+    objects: list[TrackedObject], repository: Path = Path(".")
+) -> list[str]:
+    errors: list[str] = []
+    blob_cache: dict[str, bytes] = {}
+    object_lookup = {(tracked.revision, tracked.path): tracked for tracked in objects}
+    for tracked in objects:
+        if tracked.object_type == "blob" and tracked.size > MAX_TRACKED_BYTES:
+            errors.append(f"tracked file exceeds 10 MiB: {tracked.path}")
+        if tracked.path.suffix.lower() in FORBIDDEN_WEIGHT_SUFFIXES:
+            errors.append(f"model weight must not be tracked: {tracked.path}")
+        if tracked.path.suffix.lower() in FORBIDDEN_AUDIO_SUFFIXES:
+            errors.append(f"audio data must not be tracked: {tracked.path}")
+        if tracked.path.suffix.lower() in FORBIDDEN_DOCUMENT_ARCHIVE_SUFFIXES:
+            errors.append(f"source document or archive must not be tracked: {tracked.path}")
+        if (
+            tracked.path.suffix.lower() in DATASET_CONTENT_SUFFIXES
+            and not is_fixture_payload(tracked.path)
+        ):
+            errors.append(
+                f"dataset content must be stored outside Git or as an approved fixture: {tracked.path}"
+            )
+        if is_environment_secret(tracked.path):
+            errors.append(f"environment secret file must not be tracked: {tracked.path}")
+        if is_credential_path(tracked.path):
+            errors.append(f"credential file must not be tracked: {tracked.path}")
+        for label in secret_labels(tracked, repository, blob_cache):
+            errors.append(f"possible {label} detected in tracked blob: {tracked.path}")
+        for label in personal_data_labels(tracked, repository, blob_cache):
+            errors.append(f"possible {label} detected in tracked blob: {tracked.path}")
+        errors.extend(manifest_errors(tracked, repository, blob_cache))
+        errors.extend(
+            fixture_errors(tracked, object_lookup, repository, blob_cache)
+        )
+        is_allowed_placeholder = (
+            tracked.object_type == "blob" and tracked.path in ALLOWED_PLACEHOLDERS
+        )
+        if not is_allowed_placeholder and is_forbidden_output(tracked.path):
+            errors.append(f"generated output must not be tracked: {tracked.path}")
+    return errors
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    scan_mode = parser.add_mutually_exclusive_group()
+    scan_mode.add_argument(
+        "--base-ref",
+        help="scan every file path in every commit after this Git revision",
+    )
+    scan_mode.add_argument(
+        "--all-history",
+        action="store_true",
+        help="scan every file path in every commit reachable from HEAD",
+    )
+    args = parser.parse_args()
+    if args.base_ref:
+        objects = commit_range_objects(args.base_ref)
+    elif args.all_history:
+        objects = reachable_commit_objects()
+    else:
+        objects = current_tree_objects()
+    errors = violations(objects)
+    if args.base_ref:
+        errors.extend(append_only_manifest_errors(args.base_ref))
+    if errors:
+        print("\n".join(errors), file=sys.stderr)
+        return 1
+    manifest_count = sum(is_manifest_path(tracked.path) for tracked in objects)
+    print(
+        "repository data policy check passed; "
+        f"validated dataset manifests: {manifest_count}"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
