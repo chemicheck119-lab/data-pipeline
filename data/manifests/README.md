@@ -11,7 +11,7 @@
 - `artifacts`: 각 항목에 `path`와 64자리 `sha256`
 - `derived` 데이터: `preprocessing.implementation`, `version`, `parameters`
 - `synthetic` 데이터: `generation.implementation`, `version`, `parameters`, `seed`
-- `integrity_report`: 버전·생성시각과 필수필드 누락, 중복, source drift 검사 결과
+- `integrity_report`: 버전·생성시각과 스키마 검증, 필수필드 누락, 중복, source drift 검사 결과
 - `integrity_report.split_integrity.entities`: `speaker`, `source`, `event`별 `passed`와 겹침 0건 또는 `not_applicable`과 사유
 
 게시된 manifest 경로는 커밋 단위 append-only입니다. 새 데이터 버전은 같은 PR의 중간 커밋에서도 기존 JSON을 고치거나 지우지 말고 새 경로로 추가해야 합니다.

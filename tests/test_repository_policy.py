@@ -250,6 +250,10 @@ class RepositoryPolicyTest(unittest.TestCase):
                                 "missing_count": 0,
                             },
                             "duplicates": {"status": "passed", "count": 0},
+                            "schema_validation": {
+                                "status": "passed",
+                                "error_count": 0,
+                            },
                             "split_integrity": {
                                 "entities": {
                                     "speaker": {
@@ -312,10 +316,28 @@ class RepositoryPolicyTest(unittest.TestCase):
 
             errors = POLICY.append_only_manifest_errors(base, repository)
             self.assertTrue(any("append-only" in error for error in errors))
-            all_history_errors = POLICY.append_only_manifest_errors(None, repository)
-            self.assertTrue(
-                any("append-only" in error for error in all_history_errors)
+
+    def test_default_scan_rejects_staged_manifest_overwrite(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory)
+            self._git(repository, "init", "-b", "main")
+            self._git(repository, "config", "user.name", "Policy Test")
+            self._git(
+                repository,
+                "config",
+                "user.email",
+                "policy" + "@example.invalid",
             )
+            manifest = repository / "data" / "manifests" / "published.json"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text("{}\n")
+            self._git(repository, "add", "data/manifests/published.json")
+            self._git(repository, "commit", "-m", "publish manifest")
+            manifest.write_text('{"changed": true}\n')
+            self._git(repository, "add", "data/manifests/published.json")
+
+            errors = POLICY.staged_append_only_manifest_errors(repository)
+            self.assertTrue(any("append-only" in error for error in errors))
 
     def test_rejects_modifying_manifest_added_earlier_in_same_range(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -344,11 +366,32 @@ class RepositoryPolicyTest(unittest.TestCase):
 
             errors = POLICY.append_only_manifest_errors(base, repository)
             self.assertTrue(any("append-only" in error for error in errors))
+            all_history_errors = POLICY.append_only_manifest_errors(None, repository)
+            self.assertTrue(
+                any("append-only" in error for error in all_history_errors)
+            )
 
     def test_rejects_fixture_without_metadata(self) -> None:
-        tracked = POLICY.TrackedObject(Path("fixtures/users.csv"), 10)
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory)
+            self._git(repository, "init", "-b", "main")
+            fixture = repository / "fixtures" / "users.csv"
+            fixture.parent.mkdir(parents=True)
+            fixture.write_text("chemical,count\nwater,1\n")
+            self._git(repository, "add", "fixtures/users.csv")
+
+            objects = POLICY.current_tree_objects(repository)
+            errors = POLICY.violations(objects, repository)
+            self.assertTrue(any("missing companion" in error for error in errors))
+
+    def test_rejects_non_blob_fixture_payload(self) -> None:
+        tracked = POLICY.TrackedObject(
+            Path("fixtures/sample.csv"),
+            0,
+            object_type="commit",
+        )
         errors = POLICY.violations([tracked])
-        self.assertTrue(any("missing companion" in error for error in errors))
+        self.assertTrue(any("available Git blob" in error for error in errors))
 
     def test_rejects_orphan_fixture_metadata(self) -> None:
         tracked = POLICY.TrackedObject(Path("fixtures/export.fixture.json"), 10)

@@ -412,6 +412,16 @@ def integrity_report_errors(report: object, prefix: str) -> list[str]:
     elif duplicates.get("status") != "passed" or duplicates.get("count") != 0:
         errors.append(f"{prefix}.duplicates must report passed with count 0")
 
+    schema_validation = report.get("schema_validation")
+    if not isinstance(schema_validation, dict):
+        errors.append(f"{prefix}.schema_validation must be an object")
+    elif schema_validation.get("status") != "passed" or schema_validation.get(
+        "error_count"
+    ) != 0:
+        errors.append(
+            f"{prefix}.schema_validation must report passed with error_count 0"
+        )
+
     split_integrity = report.get("split_integrity")
     if not isinstance(split_integrity, dict):
         errors.append(f"{prefix}.split_integrity must be an object")
@@ -610,6 +620,46 @@ def append_only_manifest_errors(
     return errors
 
 
+def staged_append_only_manifest_errors(repository: Path = Path(".")) -> list[str]:
+    has_head = subprocess.run(
+        ["git", "rev-parse", "--verify", "HEAD"],
+        check=False,
+        capture_output=True,
+        cwd=repository,
+    )
+    if has_head.returncode != 0:
+        return []
+    result = subprocess.run(
+        [
+            "git",
+            "diff",
+            "--cached",
+            "--name-status",
+            "-z",
+            "--no-renames",
+            "HEAD",
+            "--",
+            str(MANIFEST_ROOT),
+        ],
+        check=True,
+        capture_output=True,
+        cwd=repository,
+    )
+    fields = result.stdout.split(b"\0")
+    errors: list[str] = []
+    for index in range(0, len(fields) - 1, 2):
+        status = fields[index].decode("ascii", errors="replace")
+        raw_path = fields[index + 1]
+        if not status or not raw_path:
+            continue
+        path = Path(raw_path.decode("utf-8", errors="surrogateescape"))
+        if is_manifest_path(path) and status != "A":
+            errors.append(
+                f"published dataset manifests are append-only (staged {status}): {path}"
+            )
+    return errors
+
+
 def is_fixture_metadata(path: Path) -> bool:
     return (
         "fixtures" in path.parts[:-1]
@@ -644,6 +694,8 @@ def fixture_errors(
     prefix = f"invalid fixture {tracked.path}:"
     errors: list[str] = []
     content = blob_content(tracked, repository, blob_cache)
+    if content is None:
+        return [f"{prefix} payload must be an available Git blob"]
 
     metadata_path = fixture_metadata_path(tracked.path)
     metadata_object = object_lookup.get((tracked.revision, metadata_path))
@@ -821,6 +873,8 @@ def main() -> int:
         errors.extend(append_only_manifest_errors(args.base_ref))
     elif args.all_history:
         errors.extend(append_only_manifest_errors(None))
+    else:
+        errors.extend(staged_append_only_manifest_errors())
     if errors:
         print("\n".join(errors), file=sys.stderr)
         return 1
