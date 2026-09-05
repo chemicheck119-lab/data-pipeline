@@ -91,6 +91,8 @@ PYTHONPATH=src python -m chemicheck119_data.radio_simulation \
 원본 ID·원본/산출물 SHA-256·변환 파라미터·레코드별 seed는
 `provenance.private.jsonl`에 기록합니다. 이 파일과 음성·라벨 ZIP은 비공개 저장소에만
 둡니다. Git에는 필요한 경우 개인정보가 없는 파생 manifest와 집계 결과만 추가합니다.
+송신 시작·종료를 자른 조건은 사라진 음성을 deletion으로 평가하기 위해 원래 참조문을
+유지하므로, 원래 발화 타임스탬프와 파생 음성의 시간 정렬은 `not_applicable`로 기록합니다.
 
 사이렌·차량·바람은 실제 현장 녹음이 아닌 절차적 신호이며, μ-law도 특정 무전기 코덱의
 bit-exact 구현이 아닙니다. 결과는 반드시 **모의 통신 왜곡 평가**로 부르고 현장 무전

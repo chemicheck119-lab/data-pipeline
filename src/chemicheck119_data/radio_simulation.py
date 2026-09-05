@@ -474,6 +474,7 @@ def _manifest(
     audio_archive: Path,
     label_archive: Path,
     ledger: Path,
+    audio_seconds: float,
     artifact_prefix: str,
     generated_at: str,
 ) -> dict[str, object]:
@@ -484,11 +485,20 @@ def _manifest(
     source["parent_manifest_sha256"] = source_manifest_sha256
     prefix = artifact_prefix.rstrip("/")
     artifacts = [
-        {"path": f"{prefix}/audio/{audio_archive.name}", "sha256": sha256_file(audio_archive)},
-        {"path": f"{prefix}/labels/{label_archive.name}", "sha256": sha256_file(label_archive)},
+        {
+            "path": f"{prefix}/audio/{audio_archive.name}",
+            "sha256": sha256_file(audio_archive),
+            "bytes": audio_archive.stat().st_size,
+        },
+        {
+            "path": f"{prefix}/labels/{label_archive.name}",
+            "sha256": sha256_file(label_archive),
+            "bytes": label_archive.stat().st_size,
+        },
         {
             "path": f"{prefix}/{ledger.name}",
             "sha256": sha256_file(ledger),
+            "bytes": ledger.stat().st_size,
             "access": "private",
         },
     ]
@@ -541,6 +551,20 @@ def _manifest(
             "required_fields": {"status": "passed", "missing_count": 0},
             "duplicates": {"status": "passed", "count": 0},
             "schema_validation": {"status": "passed", "error_count": 0},
+            "reference_timing": {
+                "status": (
+                    "not_applicable"
+                    if spec.kind in {"cut", "combined"}
+                    else "not_evaluated"
+                ),
+                "reason": (
+                    "source transcript and timestamps are intentionally preserved so "
+                    "speech removed by start/end cuts is scored as deletion"
+                    if spec.kind in {"cut", "combined"}
+                    else "the shared source labels are used as text references; derived "
+                    "audio timestamp alignment was not independently relabeled"
+                ),
+            },
             "pairing": {
                 "status": "passed",
                 "strategy": "same sampled source member stem in audio and label archives",
@@ -564,6 +588,8 @@ def _manifest(
             "paired_count": record_count,
             "priority_term_positive_count": selected_positive,
             "priority_term_negative_count": selected_negative,
+            "audio_seconds": round(audio_seconds, 6),
+            "audio_hours": round(audio_seconds / 3600.0, 6),
         },
         "evaluation": {
             "id": f"speech_{dataset_id}_{record_count}",
@@ -575,6 +601,7 @@ def _manifest(
             "SNR uses whole-record RMS rather than calibrated active-speech level",
             "mu-law is a mathematical 8-bit companding proxy, not a vendor radio codec",
             "selection is stratified by pre-registered priority-term presence and is not population prevalence",
+            "source transcript text is retained after cuts to measure deletion errors; source timestamps are not realigned",
         ],
     }
 
@@ -697,6 +724,11 @@ def build_radio_simulation(
 
         manifests: list[dict[str, object]] = []
         for spec in variants:
+            variant_audio_seconds = sum(
+                float(row["signal"]["output_seconds"])
+                for row in ledgers
+                if row["variant"]["id"] == spec.id
+            )
             manifest = _manifest(
                 source_manifest=source_manifest,
                 source_manifest_sha256=source_manifest_sha256,
@@ -710,6 +742,7 @@ def build_radio_simulation(
                 audio_archive=audio_output_dir / f"{spec.id}.zip",
                 label_archive=labels_output,
                 ledger=ledger_path,
+                audio_seconds=variant_audio_seconds,
                 artifact_prefix=artifact_prefix,
                 generated_at=created,
             )
@@ -724,6 +757,7 @@ def build_radio_simulation(
                     "evaluation_id": manifest["evaluation"]["id"],
                     "manifest": f"manifests/{manifest_path.name}",
                     "manifest_sha256": sha256_file(manifest_path),
+                    "audio_seconds": round(variant_audio_seconds, 6),
                 }
             )
 
@@ -743,6 +777,13 @@ def build_radio_simulation(
                 "total": len(selected),
             },
             "variant_count": len(variants),
+            "total_audio_seconds": round(
+                sum(float(item["audio_seconds"]) for item in manifests), 6
+            ),
+            "total_audio_hours": round(
+                sum(float(item["audio_seconds"]) for item in manifests) / 3600.0,
+                6,
+            ),
             "private_ledger_sha256": sha256_file(ledger_path),
             "manifests": manifests,
             "evidence_scope": "simulated communication distortion; not field-radio validation",

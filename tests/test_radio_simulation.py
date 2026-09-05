@@ -135,6 +135,8 @@ class RadioSimulationTest(unittest.TestCase):
                 self.assertEqual(PROFILE_ID, summary["profile_id"])
                 self.assertEqual(2, summary["selected"]["total"])
                 self.assertEqual(18, summary["variant_count"])
+                self.assertGreater(summary["total_audio_seconds"], 0)
+                self.assertGreater(summary["total_audio_hours"], 0)
                 outputs.append(output)
 
             first_hashes = {
@@ -183,6 +185,20 @@ class RadioSimulationTest(unittest.TestCase):
             self.assertEqual(2, manifest["evaluation"]["record_count"])
             self.assertFalse(manifest["split"]["parameters"]["used_for_tuning"])
             self.assertIn("not field-radio", manifest["evidence_scope"])
+            self.assertGreater(manifest["inventory"]["audio_seconds"], 0)
+            self.assertEqual(
+                "not_evaluated",
+                manifest["integrity_report"]["reference_timing"]["status"],
+            )
+            cut_manifest = json.loads(
+                (outputs[0] / "manifests" / "start_cut_300ms.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                "not_applicable",
+                cut_manifest["integrity_report"]["reference_timing"]["status"],
+            )
 
     def test_rejects_unpinned_source_and_overwrite(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
