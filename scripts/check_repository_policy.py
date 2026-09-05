@@ -124,6 +124,7 @@ SECRET_CONTENT_PATTERNS = (
     ),
     ("AWS access key", re.compile(br"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
     ("GitHub token", re.compile(br"\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,})\b")),
+    ("GitLab token", re.compile(br"\bglpat-[A-Za-z0-9_-]{20,}\b")),
     ("OpenAI API key", re.compile(br"\bsk-[A-Za-z0-9_-]{20,}\b")),
     (
         "signed download URL",
@@ -386,6 +387,10 @@ def is_iso8601_timestamp(value: object) -> bool:
     return parsed.tzinfo is not None
 
 
+def is_zero_integer(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value == 0
+
+
 def recipe_errors(recipe: object, prefix: str) -> list[str]:
     if not isinstance(recipe, dict):
         return [f"{prefix} must be an object"]
@@ -412,9 +417,9 @@ def integrity_report_errors(report: object, prefix: str) -> list[str]:
     required_fields = report.get("required_fields")
     if not isinstance(required_fields, dict):
         errors.append(f"{prefix}.required_fields must be an object")
-    elif required_fields.get("status") != "passed" or required_fields.get(
-        "missing_count"
-    ) != 0:
+    elif required_fields.get("status") != "passed" or not is_zero_integer(
+        required_fields.get("missing_count")
+    ):
         errors.append(
             f"{prefix}.required_fields must report passed with missing_count 0"
         )
@@ -422,15 +427,17 @@ def integrity_report_errors(report: object, prefix: str) -> list[str]:
     duplicates = report.get("duplicates")
     if not isinstance(duplicates, dict):
         errors.append(f"{prefix}.duplicates must be an object")
-    elif duplicates.get("status") != "passed" or duplicates.get("count") != 0:
+    elif duplicates.get("status") != "passed" or not is_zero_integer(
+        duplicates.get("count")
+    ):
         errors.append(f"{prefix}.duplicates must report passed with count 0")
 
     schema_validation = report.get("schema_validation")
     if not isinstance(schema_validation, dict):
         errors.append(f"{prefix}.schema_validation must be an object")
-    elif schema_validation.get("status") != "passed" or schema_validation.get(
-        "error_count"
-    ) != 0:
+    elif schema_validation.get("status") != "passed" or not is_zero_integer(
+        schema_validation.get("error_count")
+    ):
         errors.append(
             f"{prefix}.schema_validation must report passed with error_count 0"
         )
@@ -454,7 +461,9 @@ def integrity_report_errors(report: object, prefix: str) -> list[str]:
                     errors.append(
                         f"{entity_prefix}.status must be passed or not_applicable"
                     )
-                if status == "passed" and result.get("overlap_count") != 0:
+                if status == "passed" and not is_zero_integer(
+                    result.get("overlap_count")
+                ):
                     errors.append(
                         f"{entity_prefix}.overlap_count must be 0 when passed"
                     )
@@ -486,6 +495,13 @@ def integrity_report_errors(report: object, prefix: str) -> list[str]:
             errors.append(
                 f"{prefix}.source_drift.changes_detected must be 0"
             )
+        if drift_status == "not_applicable" and (
+            not isinstance(source_drift.get("reason"), str)
+            or not source_drift["reason"].strip()
+        ):
+            errors.append(
+                f"{prefix}.source_drift.reason is required when not_applicable"
+            )
     return errors
 
 
@@ -513,6 +529,19 @@ def split_seed_errors(split: dict, prefix: str) -> list[str]:
         return [f"{prefix}.seed must be an integer or null"]
     if seed is None and split_uses_randomness(split):
         return [f"{prefix}.seed must be an integer for a stochastic strategy"]
+    return []
+
+
+def preprocessing_seed_errors(recipe: dict, prefix: str) -> list[str]:
+    seed = recipe.get("seed")
+    if seed is not None and (not isinstance(seed, int) or isinstance(seed, bool)):
+        return [f"{prefix}.seed must be an integer or null"]
+    stochastic_recipe = {
+        "strategy": recipe.get("implementation"),
+        "parameters": recipe.get("parameters"),
+    }
+    if seed is None and split_uses_randomness(stochastic_recipe):
+        return [f"{prefix}.seed must be an integer for stochastic preprocessing"]
     return []
 
 
@@ -572,9 +601,12 @@ def manifest_errors(
         errors.extend(split_seed_errors(split, f"{prefix} split"))
 
     if classification == "derived":
-        errors.extend(
-            recipe_errors(manifest.get("preprocessing"), f"{prefix} preprocessing")
-        )
+        preprocessing = manifest.get("preprocessing")
+        errors.extend(recipe_errors(preprocessing, f"{prefix} preprocessing"))
+        if isinstance(preprocessing, dict):
+            errors.extend(
+                preprocessing_seed_errors(preprocessing, f"{prefix} preprocessing")
+            )
     if classification == "synthetic":
         generation = manifest.get("generation")
         errors.extend(recipe_errors(generation, f"{prefix} generation"))
@@ -610,6 +642,43 @@ def manifest_errors(
     return errors
 
 
+def manifest_diff_errors(
+    old_ref: str,
+    new_ref: str,
+    label: str,
+    repository: Path = Path("."),
+) -> list[str]:
+    diff_result = subprocess.run(
+        [
+            "git",
+            "diff",
+            "--name-status",
+            "-z",
+            "--no-renames",
+            old_ref,
+            new_ref,
+            "--",
+            str(MANIFEST_ROOT),
+        ],
+        check=True,
+        capture_output=True,
+        cwd=repository,
+    )
+    fields = diff_result.stdout.split(b"\0")
+    errors: list[str] = []
+    for index in range(0, len(fields) - 1, 2):
+        status = fields[index].decode("ascii", errors="replace")
+        raw_path = fields[index + 1]
+        if not status or not raw_path:
+            continue
+        path = Path(raw_path.decode("utf-8", errors="surrogateescape"))
+        if is_manifest_path(path) and status != "A":
+            errors.append(
+                f"published dataset manifests are append-only ({status} in {label}): {path}"
+            )
+    return errors
+
+
 def append_only_manifest_errors(
     base_ref: Optional[str], repository: Path = Path(".")
 ) -> list[str]:
@@ -622,6 +691,10 @@ def append_only_manifest_errors(
         cwd=repository,
     )
     errors: list[str] = []
+    if base_ref:
+        errors.extend(
+            manifest_diff_errors(base_ref, "HEAD", f"{base_ref}..HEAD", repository)
+        )
     for commit in commit_result.stdout.splitlines():
         parent_result = subprocess.run(
             ["git", "rev-list", "--parents", "-n", "1", commit],
@@ -632,34 +705,9 @@ def append_only_manifest_errors(
         )
         parents = parent_result.stdout.strip().split()[1:]
         for parent in parents:
-            diff_result = subprocess.run(
-                [
-                    "git",
-                    "diff",
-                    "--name-status",
-                    "-z",
-                    "--no-renames",
-                    parent,
-                    commit,
-                    "--",
-                    str(MANIFEST_ROOT),
-                ],
-                check=True,
-                capture_output=True,
-                cwd=repository,
+            errors.extend(
+                manifest_diff_errors(parent, commit, commit[:12], repository)
             )
-            fields = diff_result.stdout.split(b"\0")
-            for index in range(0, len(fields) - 1, 2):
-                status = fields[index].decode("ascii", errors="replace")
-                raw_path = fields[index + 1]
-                if not status or not raw_path:
-                    continue
-                path = Path(raw_path.decode("utf-8", errors="surrogateescape"))
-                if is_manifest_path(path) and status != "A":
-                    errors.append(
-                        "published dataset manifests are append-only "
-                        f"({status} in {commit[:12]}): {path}"
-                    )
     return errors
 
 

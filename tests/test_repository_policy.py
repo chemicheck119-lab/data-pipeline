@@ -239,6 +239,19 @@ class RepositoryPolicyTest(unittest.TestCase):
             errors = POLICY.violations(objects, repository)
             self.assertTrue(any("signed download URL" in error for error in errors))
 
+    def test_scans_blob_contents_for_gitlab_tokens(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory)
+            self._git(repository, "init", "-b", "main")
+            token = "gl" + "pat-" + ("a" * 20)
+            secret = repository / "config.txt"
+            secret.write_text(token)
+            self._git(repository, "add", "config.txt")
+
+            objects = POLICY.current_tree_objects(repository)
+            errors = POLICY.violations(objects, repository)
+            self.assertTrue(any("GitLab token" in error for error in errors))
+
     def test_rejects_manifest_without_required_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repository = Path(directory)
@@ -319,6 +332,7 @@ class RepositoryPolicyTest(unittest.TestCase):
                             "source_drift": {
                                 "status": "not_applicable",
                                 "changes_detected": 0,
+                                "reason": "generated source is immutable",
                             },
                         },
                         "artifacts": [
@@ -356,9 +370,63 @@ class RepositoryPolicyTest(unittest.TestCase):
         errors = POLICY.integrity_report_errors(report, "manifest integrity_report")
         self.assertTrue(any("changes_detected must be 0" in error for error in errors))
 
-        report["source_drift"]["status"] = "not_applicable"
+        report["source_drift"].update(
+            {"status": "not_applicable", "reason": "immutable test source"}
+        )
         errors = POLICY.integrity_report_errors(report, "manifest integrity_report")
         self.assertTrue(any("changes_detected must be 0" in error for error in errors))
+
+    def test_not_applicable_source_drift_requires_reason(self) -> None:
+        report = {
+            "schema_version": "1.0.0",
+            "generated_at": "2026-09-05T00:00:00Z",
+            "required_fields": {"status": "passed", "missing_count": 0},
+            "duplicates": {"status": "passed", "count": 0},
+            "schema_validation": {"status": "passed", "error_count": 0},
+            "split_integrity": {
+                "entities": {
+                    entity: {
+                        "status": "not_applicable",
+                        "reason": "unit-test fixture",
+                    }
+                    for entity in ("speaker", "source", "event")
+                }
+            },
+            "source_drift": {"status": "not_applicable", "changes_detected": 0},
+        }
+        errors = POLICY.integrity_report_errors(report, "manifest integrity_report")
+        self.assertTrue(any("reason is required" in error for error in errors))
+
+    def test_rejects_boolean_integrity_counts(self) -> None:
+        base_report = {
+            "schema_version": "1.0.0",
+            "generated_at": "2026-09-05T00:00:00Z",
+            "required_fields": {"status": "passed", "missing_count": 0},
+            "duplicates": {"status": "passed", "count": 0},
+            "schema_validation": {"status": "passed", "error_count": 0},
+            "split_integrity": {
+                "entities": {
+                    entity: {"status": "passed", "overlap_count": 0}
+                    for entity in ("speaker", "source", "event")
+                }
+            },
+            "source_drift": {"status": "passed", "changes_detected": 0},
+        }
+        count_paths = (
+            ("required_fields", "missing_count"),
+            ("duplicates", "count"),
+            ("schema_validation", "error_count"),
+        )
+        for section, field in count_paths:
+            with self.subTest(section=section, field=field):
+                report = json.loads(json.dumps(base_report))
+                report[section][field] = False
+                self.assertTrue(
+                    POLICY.integrity_report_errors(report, "integrity_report")
+                )
+        report = json.loads(json.dumps(base_report))
+        report["split_integrity"]["entities"]["speaker"]["overlap_count"] = False
+        self.assertTrue(POLICY.integrity_report_errors(report, "integrity_report"))
 
     def test_stochastic_split_requires_integer_seed(self) -> None:
         errors = POLICY.split_seed_errors(
@@ -373,6 +441,17 @@ class RepositoryPolicyTest(unittest.TestCase):
                 "manifest split",
             ),
         )
+
+    def test_stochastic_preprocessing_requires_integer_seed(self) -> None:
+        errors = POLICY.preprocessing_seed_errors(
+            {
+                "implementation": "pipeline.random_augmentation",
+                "version": "1.0.0",
+                "parameters": {},
+            },
+            "manifest preprocessing",
+        )
+        self.assertTrue(any("stochastic preprocessing" in error for error in errors))
 
     def test_derived_manifest_requires_preprocessing_recipe(self) -> None:
         errors = POLICY.recipe_errors(None, "manifest preprocessing")
@@ -400,6 +479,39 @@ class RepositoryPolicyTest(unittest.TestCase):
             self._git(repository, "commit", "-m", "overwrite manifest")
 
             errors = POLICY.append_only_manifest_errors(base, repository)
+            self.assertTrue(any("append-only" in error for error in errors))
+
+    def test_rejects_manifest_rewrite_across_non_fast_forward_push(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory)
+            self._git(repository, "init", "-b", "main")
+            self._git(repository, "config", "user.name", "Policy Test")
+            self._git(
+                repository,
+                "config",
+                "user.email",
+                "policy" + "@example.invalid",
+            )
+            readme = repository / "README.md"
+            readme.write_text("base\n")
+            self._git(repository, "add", "README.md")
+            self._git(repository, "commit", "-m", "base")
+            common_parent = self._git(repository, "rev-parse", "HEAD").stdout.strip()
+
+            manifest = repository / "data" / "manifests" / "published.json"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text('{"version": 1}\n')
+            self._git(repository, "add", "data/manifests/published.json")
+            self._git(repository, "commit", "-m", "publish original manifest")
+            old_tip = self._git(repository, "rev-parse", "HEAD").stdout.strip()
+
+            self._git(repository, "reset", "--hard", common_parent)
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text('{"version": 2}\n')
+            self._git(repository, "add", "data/manifests/published.json")
+            self._git(repository, "commit", "-m", "rewrite manifest on new history")
+
+            errors = POLICY.append_only_manifest_errors(old_tip, repository)
             self.assertTrue(any("append-only" in error for error in errors))
 
     def test_default_scan_rejects_staged_manifest_overwrite(self) -> None:
