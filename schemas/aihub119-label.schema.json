@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chemicheck119-lab.github.io/schemas/aihub119-label.schema.json",
+  "title": "AIHub 119 label subset used by ChemiCheck119",
+  "type": "object",
+  "required": [
+    "_id",
+    "audioPath",
+    "recordId",
+    "utterances",
+    "disasterLarge",
+    "disasterMedium"
+  ],
+  "properties": {
+    "_id": {"type": "string", "minLength": 1},
+    "audioPath": {"type": "string", "minLength": 1},
+    "recordId": {"type": "string", "minLength": 1},
+    "utterances": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "startAt", "endAt", "text", "speaker"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "startAt": {"type": "integer"},
+          "endAt": {"type": "integer"},
+          "text": {"type": "string"},
+          "speaker": {"type": "integer"}
+        }
+      }
+    },
+    "disasterLarge": {"type": "string"},
+    "disasterMedium": {"type": "string"}
+  }
+}

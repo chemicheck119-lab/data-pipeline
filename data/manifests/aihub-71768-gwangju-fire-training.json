@@ -1,0 +1,100 @@
+{
+  "schema_version": "1.0.0",
+  "dataset_id": "aihub_71768_gwangju_fire",
+  "dataset_version": "dataset-71768_downloaded-2026-09-05",
+  "created_at": "2026-09-05T00:00:00Z",
+  "classification": "approved_restricted",
+  "usage_role": "training",
+  "source": {
+    "name": "AIHub 119 intelligent emergency-call speech recognition data",
+    "url": "https://www.aihub.or.kr/aihubdata/data/view.do?dataSetSn=71768",
+    "license": "AIHub dataset access terms; restricted use and redistribution status not independently verified",
+    "version": "dataset-71768_downloaded-2026-09-05",
+    "collected_at": "2026-09-05T00:00:00Z"
+  },
+  "split": {
+    "name": "training",
+    "strategy": "provider fixed partition",
+    "unit": "record",
+    "parameters": {
+      "provider_partition": "Training",
+      "used_for_tuning": true
+    },
+    "seed": null
+  },
+  "integrity_report": {
+    "schema_version": "1.0.0",
+    "generated_at": "2026-09-05T00:00:00Z",
+    "required_fields": {
+      "status": "passed",
+      "missing_count": 0
+    },
+    "duplicates": {
+      "status": "passed",
+      "count": 0
+    },
+    "schema_validation": {
+      "status": "passed",
+      "error_count": 0
+    },
+    "split_integrity": {
+      "entities": {
+        "speaker": {
+          "status": "not_applicable",
+          "reason": "labels contain speaker roles, not stable speaker identities"
+        },
+        "source": {
+          "status": "passed",
+          "overlap_count": 0
+        },
+        "event": {
+          "status": "passed",
+          "overlap_count": 0
+        }
+      }
+    },
+    "source_drift": {
+      "status": "passed",
+      "changes_detected": 0
+    }
+  },
+  "artifacts": [
+    {
+      "path": "gs://chemi-check-ml-data-181872008704/raw/aihub/71768/gwangju-fire/TS_광주_화재.zip",
+      "sha256": "95859c1e55e224a7d69a863b26f088700fa4b2a47cf8efe08529bd6a95d82558"
+    },
+    {
+      "path": "gs://chemi-check-ml-data-181872008704/raw/aihub/71768/gwangju-fire/TL_광주_화재.zip",
+      "sha256": "8f5dcba920474d38aea4f490836f173bd0b868097833faec1e87dff164b58224"
+    }
+  ],
+  "inventory": {
+    "split": "training",
+    "audio_count": 659,
+    "label_count": 659,
+    "paired_count": 659,
+    "audio_without_label": 0,
+    "label_without_audio": 0,
+    "duplicate_audio_stems": 0,
+    "duplicate_label_stems": 0,
+    "duplicate_record_ids": 0,
+    "missing_required_fields": 0,
+    "schema_error_count": 0,
+    "utterance_count": 22921,
+    "empty_utterance_count": 0,
+    "transcript_character_count": 338537,
+    "audio_seconds": 52686.04,
+    "min_audio_seconds": 30.08,
+    "max_audio_seconds": 179.8,
+    "sample_rates": [
+      8000
+    ],
+    "channel_counts": [
+      1
+    ],
+    "sample_widths": [
+      2
+    ],
+    "audio_hours": 14.635
+  }
+}
