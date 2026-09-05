@@ -359,9 +359,12 @@ def _manifest(
     artifact_prefix: str,
     generated_at: str,
     collected_at: str,
-    source_overlap: int,
-    event_overlap: int,
+    source_overlap: int | None,
+    event_overlap: int | None,
     baseline_manifest: dict[str, object] | None,
+    dataset_id: str = DATASET_ID,
+    dataset_version: str = DATASET_VERSION,
+    evaluation_id: str = EVALUATION_ID,
 ) -> dict[str, object]:
     prefix = artifact_prefix.rstrip("/")
     artifacts = [
@@ -376,8 +379,8 @@ def _manifest(
     ]
     manifest: dict[str, object] = {
         "schema_version": "1.0.0",
-        "dataset_id": DATASET_ID,
-        "dataset_version": DATASET_VERSION,
+        "dataset_id": dataset_id,
+        "dataset_version": dataset_version,
         "created_at": generated_at,
         "classification": "approved_restricted",
         "usage_role": usage_role,
@@ -390,7 +393,7 @@ def _manifest(
                 "AI model training use with attribution; no unapproved third-party "
                 "access or redistribution; overseas transfer requires separate agreement"
             ),
-            "version": DATASET_VERSION,
+            "version": dataset_version,
             "collected_at": collected_at,
         },
         "split": {
@@ -449,12 +452,26 @@ def _manifest(
                         ),
                     },
                     "source": {
-                        "status": "passed",
+                        "status": (
+                            "passed" if source_overlap is not None else "not_evaluated"
+                        ),
                         "overlap_count": source_overlap,
+                        "reason": (
+                            None
+                            if source_overlap is not None
+                            else "training partition was not supplied for comparison"
+                        ),
                     },
                     "event": {
-                        "status": "passed",
+                        "status": (
+                            "passed" if event_overlap is not None else "not_evaluated"
+                        ),
                         "overlap_count": event_overlap,
+                        "reason": (
+                            None
+                            if event_overlap is not None
+                            else "training partition was not supplied for comparison"
+                        ),
                     },
                 }
             },
@@ -465,10 +482,60 @@ def _manifest(
     }
     if usage_role == "evaluation":
         manifest["evaluation"] = {
-            "id": EVALUATION_ID,
+            "id": evaluation_id,
             "record_count": stats.paired_count,
         }
     return manifest
+
+
+def build_evaluation_manifest(
+    *,
+    validation_audio: Path,
+    validation_labels: Path,
+    artifact_prefix: str,
+    collected_at: str,
+    dataset_id: str,
+    dataset_version: str,
+    generated_at: str | None = None,
+    expected_validation_records: int | None = None,
+    baseline_manifest: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """Build a validation-only manifest for cross-region external evaluation."""
+
+    if not dataset_id.strip() or not dataset_version.strip():
+        raise ValueError("dataset ID and version must be declared")
+    created = generated_at or datetime.now(timezone.utc).isoformat().replace(
+        "+00:00", "Z"
+    )
+    validation = inspect_archive_pair(
+        validation_audio, validation_labels, "validation"
+    )
+    _validate_stats(validation)
+    if (
+        expected_validation_records is not None
+        and validation.paired_count != expected_validation_records
+    ):
+        raise ValueError(
+            "fixed validation record count mismatch: "
+            f"expected={expected_validation_records}, actual={validation.paired_count}"
+        )
+    evaluation_id = f"speech_{dataset_id}_validation_{validation.paired_count}"
+    return _manifest(
+        stats=validation,
+        usage_role="evaluation",
+        partition_name="Validation",
+        audio_archive=validation_audio,
+        label_archive=validation_labels,
+        artifact_prefix=artifact_prefix,
+        generated_at=created,
+        collected_at=collected_at,
+        source_overlap=None,
+        event_overlap=None,
+        baseline_manifest=baseline_manifest,
+        dataset_id=dataset_id,
+        dataset_version=dataset_version,
+        evaluation_id=evaluation_id,
+    )
 
 
 def build_manifests(
