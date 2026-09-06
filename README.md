@@ -71,6 +71,21 @@ digest만 기록합니다. 개별 `recordId`, 전사문, 주소, split 배정 �
 신고가 동일 사고인지 여부는 `not_evaluated`입니다. 이 dev는 모델 선택에 쓰는 개발셋이며
 별도 비공개 test가 아닙니다.
 
+분할 v2를 실제 LoRA 입력으로 바꿀 때는 원본과 동일한 clean archive와 `radio-sim-v1`의
+`wind_snr0` archive를 train/dev 각각 생성합니다. 네 audio archive와 두 label archive,
+private ledger는 비공개 경로에만 저장하며 실행 summary도 학습을 자동 승인하지 않습니다.
+
+```bash
+PYTHONPATH=src python -m chemicheck119_data.lora_artifacts \
+  --audio-archive /secure/TS_광주_화재.zip \
+  --label-archive /secure/TL_광주_화재.zip \
+  --source-manifest data/manifests/aihub-71768-gwangju-fire-training.json \
+  --split-manifest data/manifests/aihub-71768-gwangju-fire-training-lora-split-v2.json \
+  --priority-terms config/speech_priority_terms_v1.txt \
+  --output-dir /secure/gwangju-lora-artifacts-v1 \
+  --artifact-prefix gs://PRIVATE_BUCKET/derived/aihub/71768/gwangju-fire/lora-v1
+```
+
 ### 교차지역 Validation manifest
 
 서울·인천처럼 학습 partition을 내려받지 않고 Validation만 외부평가에 사용하는 경우에는

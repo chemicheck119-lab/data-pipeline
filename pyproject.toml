@@ -18,6 +18,7 @@ chemicheck119-aihub119 = "chemicheck119_data.aihub119:main"
 chemicheck119-aihub119-evaluation-manifest = "chemicheck119_data.aihub119_evaluation:main"
 chemicheck119-radio-simulation = "chemicheck119_data.radio_simulation:main"
 chemicheck119-aihub119-training-split = "chemicheck119_data.training_split:main"
+chemicheck119-lora-derived-artifacts = "chemicheck119_data.lora_artifacts:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
