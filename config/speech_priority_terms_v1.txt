@@ -1,5 +1,5 @@
-# 케미체크119 STT 평가·학습에서 고정해 사용하는 공개 우선용어 v1.
-# 모델 입력을 강제로 교정하지 않으며 presence 지표 계산에만 사용합니다.
+# Hints fixed in this repository before metric computation.
+# They are not selected from Validation scores and never rewrite a transcript.
 가스
 도시가스
 LPG
