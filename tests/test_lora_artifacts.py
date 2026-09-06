@@ -201,6 +201,23 @@ class LoraArtifactsTest(unittest.TestCase):
                     artifact_prefix="gs://private/derived/lora-v1",
                 )
 
+    def test_rejects_invalid_or_predating_generated_at(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inputs = _inputs(root)
+            for index, generated_at in enumerate(
+                ("2026-09-06T01:00:00", "2026-09-04T23:59:59Z")
+            ):
+                with self.subTest(generated_at=generated_at), self.assertRaisesRegex(
+                    ValueError, "generated_at"
+                ):
+                    build_lora_artifacts(
+                        **inputs,
+                        output_dir=root / f"output-{index}",
+                        artifact_prefix="gs://private/derived/lora-v1",
+                        generated_at=generated_at,
+                    )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -44,6 +44,20 @@ CONDITIONS = ("clean", "wind_snr0")
 PARTITIONS = ("train", "dev")
 
 
+def _timestamp(value: object, label: str) -> datetime:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{label} must be an ISO-8601 timestamp with timezone")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ValueError(
+            f"{label} must be an ISO-8601 timestamp with timezone"
+        ) from error
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError(f"{label} must be an ISO-8601 timestamp with timezone")
+    return parsed.astimezone(timezone.utc)
+
+
 def _implementation_provenance() -> dict[str, object]:
     sources = (
         (
@@ -357,9 +371,17 @@ def build_lora_artifacts(
             priority_terms_path=priority_terms_path,
         )
     )
-    created = generated_at or datetime.now(timezone.utc).isoformat().replace(
-        "+00:00", "Z"
-    )
+    requested_created = generated_at or datetime.now(timezone.utc).isoformat()
+    created_at = _timestamp(requested_created, "generated_at")
+    source = source_manifest.get("source")
+    if not isinstance(source, dict):
+        raise ValueError("source manifest source must be an object")
+    source_collected_at = _timestamp(source.get("collected_at"), "source collected_at")
+    source_created_at = _timestamp(source_manifest.get("created_at"), "source created_at")
+    split_created_at = _timestamp(split_manifest.get("created_at"), "split created_at")
+    if created_at < max(source_collected_at, source_created_at, split_created_at):
+        raise ValueError("generated_at must not predate its source or split artifacts")
+    created = created_at.isoformat().replace("+00:00", "Z")
     terms_sha256 = sha256_file(priority_terms_path)
     implementation_provenance = _implementation_provenance()
     variants = {spec.id: spec for spec in profile_variants() if spec.id in CONDITIONS}
