@@ -1,0 +1,204 @@
+{
+  "schema_version": "1.0.0",
+  "dataset_id": "aihub_71768_gwangju_fire",
+  "dataset_version": "dataset-71768_downloaded-2026-09-05",
+  "created_at": "2026-09-06T06:00:00Z",
+  "classification": "approved_restricted",
+  "usage_role": "training",
+  "source": {
+    "name": "AIHub 119 intelligent emergency-call speech recognition data",
+    "url": "https://www.aihub.or.kr/aihubdata/data/view.do?dataSetSn=71768",
+    "license": "AIHub AI 허브 개방 데이터 이용정책, retrieved 2026-09-05; the publisher provides no version identifier",
+    "license_url": "https://www.aihub.or.kr/intrcn/guid/usagepolicy.do",
+    "license_summary": "AI model training use with attribution; no unapproved third-party access or redistribution; overseas transfer requires separate agreement",
+    "version": "dataset-71768_downloaded-2026-09-05",
+    "collected_at": "2026-09-05T07:16:31Z"
+  },
+  "split": {
+    "name": "training-internal-train-dev",
+    "strategy": "deterministic SHA-256 rank partition",
+    "unit": "recordId group",
+    "parameters": {
+      "protocol_id": "whisper-lora-gwangju-train-dev-v1",
+      "implementation_version": "1.0.0",
+      "group_key": "recordId",
+      "dev_fraction": 0.2,
+      "dev_rounding": "nearest integer, half up",
+      "dev_assignment": "lowest SHA-256(dataset_id:seed:recordId) ranks",
+      "clean_and_derived_share_partition": true,
+      "used_for_tuning": true
+    },
+    "seed": 119
+  },
+  "integrity_report": {
+    "schema_version": "1.0.0",
+    "generated_at": "2026-09-06T06:00:00Z",
+    "required_fields": {
+      "status": "passed",
+      "missing_count": 0
+    },
+    "duplicates": {
+      "status": "passed",
+      "count": 0
+    },
+    "schema_validation": {
+      "status": "passed",
+      "error_count": 0
+    },
+    "split_integrity": {
+      "entities": {
+        "speaker": {
+          "status": "not_applicable",
+          "reason": "labels contain roles but no stable speaker identity"
+        },
+        "source": {
+          "status": "passed",
+          "overlap_count": 0
+        },
+        "event": {
+          "status": "not_evaluated",
+          "reason": "provider labels contain no stable cross-record incident ID"
+        }
+      }
+    },
+    "source_drift": {
+      "status": "passed",
+      "changes_detected": 0
+    }
+  },
+  "artifacts": [
+    {
+      "path": "gs://chemi-check-ml-data-181872008704/raw/aihub/71768/gwangju-fire/TS_광주_화재.zip",
+      "sha256": "95859c1e55e224a7d69a863b26f088700fa4b2a47cf8efe08529bd6a95d82558"
+    },
+    {
+      "path": "gs://chemi-check-ml-data-181872008704/raw/aihub/71768/gwangju-fire/TL_광주_화재.zip",
+      "sha256": "8f5dcba920474d38aea4f490836f173bd0b868097833faec1e87dff164b58224"
+    },
+    {
+      "path": "data/manifests/aihub-71768-gwangju-fire-training.json",
+      "sha256": "ad56d29958069719651b4f73c37fd29a79d5edcf03bfc9adac6a05b20fc1272b"
+    }
+  ],
+  "provenance": {
+    "generator_revision": "340200527d172a3fb1a2a64f71abe91849bc4a21",
+    "priority_terms_file": "domain_hotwords.txt",
+    "priority_terms_sha256": "1269cc8e61f8299061e061e77badcbee0670fe63421b67e733b99c252d1b67b3",
+    "contains_record_ids": false,
+    "contains_transcripts": false,
+    "contains_addresses": false,
+    "membership_digest_encoding": "SHA-256 of sorted uint32-length-prefixed UTF-8 record IDs"
+  },
+  "inventory": {
+    "record_count": 659,
+    "audio_seconds": 52686.04,
+    "audio_hours": 14.635,
+    "train": {
+      "record_count": 527,
+      "utterance_count": 18171,
+      "audio_seconds": 42059.68,
+      "audio_hours": 11.6832,
+      "membership_sha256": "9944610b7a6b7e25269d1498e6bc789deb18f958de8e77fe4dbef6bc3b40b773",
+      "priority_term_support": {
+        "가스": {
+          "record_support": 46,
+          "utterance_support": 123
+        },
+        "도시가스": {
+          "record_support": 5,
+          "utterance_support": 20
+        },
+        "LPG": {
+          "record_support": 5,
+          "utterance_support": 14
+        },
+        "기름": {
+          "record_support": 3,
+          "utterance_support": 8
+        },
+        "산소": {
+          "record_support": 29,
+          "utterance_support": 33
+        },
+        "수소": {
+          "record_support": 0,
+          "utterance_support": 0
+        },
+        "부탄": {
+          "record_support": 2,
+          "utterance_support": 3
+        },
+        "페인트": {
+          "record_support": 1,
+          "utterance_support": 1
+        },
+        "폭발": {
+          "record_support": 5,
+          "utterance_support": 8
+        },
+        "냄새": {
+          "record_support": 106,
+          "utterance_support": 276
+        },
+        "연기": {
+          "record_support": 311,
+          "utterance_support": 1139
+        }
+      }
+    },
+    "dev": {
+      "record_count": 132,
+      "utterance_count": 4750,
+      "audio_seconds": 10626.36,
+      "audio_hours": 2.9518,
+      "membership_sha256": "6b0b4d8c13d7f9b4ca9ea750e17a1343724f24ce00f72bb7b80539579ea5e790",
+      "priority_term_support": {
+        "가스": {
+          "record_support": 10,
+          "utterance_support": 21
+        },
+        "도시가스": {
+          "record_support": 2,
+          "utterance_support": 4
+        },
+        "LPG": {
+          "record_support": 2,
+          "utterance_support": 9
+        },
+        "기름": {
+          "record_support": 1,
+          "utterance_support": 2
+        },
+        "산소": {
+          "record_support": 4,
+          "utterance_support": 4
+        },
+        "수소": {
+          "record_support": 1,
+          "utterance_support": 6
+        },
+        "부탄": {
+          "record_support": 0,
+          "utterance_support": 0
+        },
+        "페인트": {
+          "record_support": 0,
+          "utterance_support": 0
+        },
+        "폭발": {
+          "record_support": 2,
+          "utterance_support": 5
+        },
+        "냄새": {
+          "record_support": 24,
+          "utterance_support": 74
+        },
+        "연기": {
+          "record_support": 74,
+          "utterance_support": 261
+        }
+      }
+    }
+  },
+  "evidence_scope": "development split for AIHub Gwangju emergency-call Training only; not a locked test and not field-radio validation"
+}
