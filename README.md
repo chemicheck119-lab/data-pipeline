@@ -46,6 +46,31 @@ Manifest는 append-only이므로 동일한 출력 경로가 있으면 명령이 
 
 이 평가는 `speech_aihub119_gwangju_fire_validation_77`이며 Resolver 울산 419건, Parser 전국 442건 평가와 별개입니다. 신고접수 음성이므로 실제 소방 무전 성능을 증명하지 않습니다.
 
+### Whisper LoRA용 광주 Training 내부 분할
+
+LoRA 실험은 광주 Training 659건만 다시 train/dev로 나눕니다. 라벨에는 안정적인 화자나
+여러 신고를 하나의 사고로 묶는 ID가 없으므로, 확인 가능한 가장 강한 단위인
+`recordId`(신고 1건)를 group으로 사용합니다. `dataset_id:seed:recordId`의 SHA-256 순위를
+고정해 하위 20%를 dev로 배정하며, 같은 신고에서 만든 clean·잡음 파생본은 반드시 같은
+partition을 상속해야 합니다.
+
+```bash
+PYTHONPATH=src python -m chemicheck119_data.training_split \
+  --audio-archive /secure/TS_광주_화재.zip \
+  --label-archive /secure/TL_광주_화재.zip \
+  --source-manifest data/manifests/aihub-71768-gwangju-fire-training.json \
+  --priority-terms config/speech_priority_terms_v1.txt \
+  --seed 119 --dev-fraction 0.2 \
+  --generated-at 2026-09-06T00:00:00Z \
+  --output data/manifests/aihub-71768-gwangju-fire-training-lora-split-v2.json
+```
+
+공개 가능한 manifest에는 partition별 건수·시간·우선용어 support와 전체 membership
+digest만 기록합니다. 개별 `recordId`, 전사문, 주소, split 배정 목록은 Git과 일반 로그에
+남기지 않습니다. 정확한 사고 ID가 없으므로 record overlap은 0으로 검증하지만 서로 다른
+신고가 동일 사고인지 여부는 `not_evaluated`입니다. 이 dev는 모델 선택에 쓰는 개발셋이며
+별도 비공개 test가 아닙니다.
+
 ### 교차지역 Validation manifest
 
 서울·인천처럼 학습 partition을 내려받지 않고 Validation만 외부평가에 사용하는 경우에는
@@ -107,8 +132,10 @@ bit-exact 구현이 아닙니다. 결과는 반드시 **모의 통신 왜곡 평
 | AIHub 신고음성 manifest 생성기 | 구현 완료 |
 | 광주 화재 Training 659건·Validation 77건 검사 | 로컬 실행 완료 |
 | 원본 보존형 `radio-sim-v1` 생성·provenance 하네스 | 부분 구현 또는 개발용 데모 |
-| 서울·인천 실제 파생 데이터 생성·STT 평가 | 설계 완료·실행 전 |
-| STT train/dev/test 분할 | AIHub 제공 Training/Validation 사용; 별도 test 미구성 |
+| 서울·인천 `radio-sim-v1` 파생 archive | 구현·실행 완료; 비공개 GCS 보관 |
+| 서울·인천 파생 음성 STT 평가 | `speech-service`에서 구현·실행 완료 |
+| 광주 Training 내부 LoRA train/dev 분할 | 구현 완료; aggregate-only v2 manifest 발행 |
+| 별도 untouched STT test | 미구성; 최종 일반화 주장 불가 |
 | 실제 현장 무전 데이터 | 확보 불가·검증되지 않음 |
 
 ## 기본 검증

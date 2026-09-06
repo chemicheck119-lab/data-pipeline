@@ -1,0 +1,13 @@
+# Hints fixed in this repository before metric computation.
+# They are not selected from Validation scores and never rewrite a transcript.
+가스
+도시가스
+LPG
+기름
+산소
+수소
+부탄
+페인트
+폭발
+냄새
+연기
