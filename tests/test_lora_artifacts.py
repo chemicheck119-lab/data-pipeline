@@ -129,7 +129,10 @@ class LoraArtifactsTest(unittest.TestCase):
             self.assertIs(first["automatic_training_allowed"], False)
             self.assertEqual(4, len(first["manifests"]))
             provenance = first["implementation_provenance"]
-            self.assertEqual({"numpy", "scipy"}, set(provenance["dependencies"]))
+            self.assertEqual(
+                {"python", "zlib_compile", "zlib_runtime", "numpy", "scipy"},
+                set(provenance["dependencies"]),
+            )
             self.assertEqual(
                 {
                     "src/chemicheck119_data/lora_artifacts.py",

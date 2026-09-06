@@ -13,8 +13,10 @@ import hashlib
 from importlib.metadata import version as distribution_version
 import json
 from pathlib import Path
+import platform
 import tempfile
 import zipfile
+import zlib
 
 from . import radio_simulation, training_split
 from .aihub119 import DATASET_ID, DATASET_VERSION, sha256_file
@@ -63,6 +65,9 @@ def _implementation_provenance() -> dict[str, object]:
             for repository_path, runtime_path in sources
         ],
         "dependencies": {
+            "python": platform.python_version(),
+            "zlib_compile": zlib.ZLIB_VERSION,
+            "zlib_runtime": zlib.ZLIB_RUNTIME_VERSION,
             "numpy": distribution_version("numpy"),
             "scipy": distribution_version("scipy"),
         },
