@@ -56,6 +56,7 @@ partition을 상속해야 합니다.
 
 ```bash
 PYTHONPATH=src python -m chemicheck119_data.training_split \
+  --audio-archive /secure/TS_광주_화재.zip \
   --label-archive /secure/TL_광주_화재.zip \
   --source-manifest data/manifests/aihub-71768-gwangju-fire-training.json \
   --priority-terms ../speech-service/config/domain_hotwords.txt \

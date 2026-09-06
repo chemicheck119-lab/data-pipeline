@@ -10,12 +10,14 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import hashlib
+import io
 from importlib import resources
 import json
 from pathlib import Path, PurePosixPath
 import re
 import struct
 import unicodedata
+import wave
 import zipfile
 
 from jsonschema import Draft202012Validator
@@ -28,6 +30,7 @@ SPLIT_PROTOCOL_ID = "whisper-lora-gwangju-train-dev-v1"
 DEFAULT_SEED = 119
 DEFAULT_DEV_FRACTION = 0.2
 MAX_LABEL_MEMBER_BYTES = 4 * 1024 * 1024
+MAX_AUDIO_MEMBER_BYTES = 32 * 1024 * 1024
 MAX_COMPRESSION_RATIO = 200
 
 
@@ -52,8 +55,9 @@ def _priority_terms(path: Path) -> tuple[str, ...]:
 
 def _source_contract(
     source_manifest_path: Path,
+    audio_archive: Path,
     label_archive: Path,
-) -> tuple[dict[str, object], bytes]:
+) -> tuple[dict[str, object], bytes, list[dict[str, object]]]:
     source_bytes = source_manifest_path.read_bytes()
     try:
         source = json.loads(source_bytes.decode("utf-8"))
@@ -89,43 +93,84 @@ def _source_contract(
     artifacts = source.get("artifacts")
     if not isinstance(artifacts, list):
         raise ValueError("source manifest artifacts must be an array")
-    matches = [
-        item
-        for item in artifacts
-        if isinstance(item, dict)
-        and PurePosixPath(str(item.get("path") or "")).name == label_archive.name
-    ]
-    if len(matches) != 1 or matches[0].get("sha256") != sha256_file(label_archive):
-        raise ValueError("label archive SHA-256 does not match the source manifest")
-    return source, source_bytes
+    matched_artifacts: list[dict[str, object]] = []
+    for archive_path, label in (
+        (audio_archive, "audio"),
+        (label_archive, "label"),
+    ):
+        matches = [
+            item
+            for item in artifacts
+            if isinstance(item, dict)
+            and PurePosixPath(str(item.get("path") or "")).name == archive_path.name
+        ]
+        if len(matches) != 1 or matches[0].get("sha256") != sha256_file(archive_path):
+            raise ValueError(
+                f"{label} archive SHA-256 does not match the source manifest"
+            )
+        matched_artifacts.append(dict(matches[0]))
+    return source, source_bytes, matched_artifacts
 
 
-def _safe_label_members(archive: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
-    members: list[zipfile.ZipInfo] = []
+def _safe_members(
+    archive: zipfile.ZipFile,
+    *,
+    suffix: str,
+    maximum_bytes: int,
+) -> dict[str, zipfile.ZipInfo]:
+    members: dict[str, zipfile.ZipInfo] = {}
     stems: set[str] = set()
     for info in archive.infolist():
-        if not info.filename.lower().endswith(".json"):
+        if not info.filename.lower().endswith(suffix):
             continue
-        if info.file_size <= 0 or info.file_size > MAX_LABEL_MEMBER_BYTES:
-            raise ValueError("label archive contains an unsafe member size")
+        if info.file_size <= 0 or info.file_size > maximum_bytes:
+            raise ValueError("archive contains an unsafe member size")
         if info.file_size / max(1, info.compress_size) > MAX_COMPRESSION_RATIO:
-            raise ValueError("label archive contains an unsafe compression ratio")
+            raise ValueError("archive contains an unsafe compression ratio")
         stem = PurePosixPath(info.filename).stem
         if stem in stems:
-            raise ValueError("label archive contains a duplicate member stem")
+            raise ValueError("archive contains a duplicate member stem")
         stems.add(stem)
-        members.append(info)
+        members[stem] = info
     if not members:
-        raise ValueError("label archive contains no JSON records")
-    return sorted(members, key=lambda item: item.filename)
+        raise ValueError(f"archive contains no {suffix} records")
+    return members
 
 
-def _read_bounded(archive: zipfile.ZipFile, info: zipfile.ZipInfo) -> bytes:
+def _read_bounded(
+    archive: zipfile.ZipFile,
+    info: zipfile.ZipInfo,
+    maximum_bytes: int,
+) -> bytes:
     with archive.open(info) as source:
-        content = source.read(MAX_LABEL_MEMBER_BYTES + 1)
-    if not content or len(content) > MAX_LABEL_MEMBER_BYTES:
-        raise ValueError("label archive member exceeded the bounded read")
+        content = source.read(maximum_bytes + 1)
+    if not content or len(content) > maximum_bytes:
+        raise ValueError("archive member exceeded the bounded read")
     return content
+
+
+def _audio_duration(content: bytes) -> float:
+    try:
+        with wave.open(io.BytesIO(content), "rb") as audio:
+            channels = audio.getnchannels()
+            sample_width = audio.getsampwidth()
+            sample_rate = audio.getframerate()
+            frame_count = audio.getnframes()
+            compression = audio.getcomptype()
+            payload = audio.readframes(frame_count)
+    except (EOFError, wave.Error) as error:
+        raise ValueError("audio archive contains invalid WAV data") from error
+    expected_payload_bytes = frame_count * channels * sample_width
+    if (
+        channels <= 0
+        or sample_width <= 0
+        or sample_rate <= 0
+        or frame_count <= 0
+        or compression != "NONE"
+        or len(payload) != expected_payload_bytes
+    ):
+        raise ValueError("audio archive contains unsupported or truncated WAV data")
+    return frame_count / sample_rate
 
 
 def _membership_digest(record_ids: list[str]) -> str:
@@ -172,6 +217,7 @@ def _partition_summary(
 
 def build_training_split_manifest(
     *,
+    audio_archive: Path,
     label_archive: Path,
     source_manifest_path: Path,
     priority_terms_path: Path,
@@ -188,8 +234,8 @@ def build_training_split_manifest(
         raise ValueError("dev fraction must be between 0.05 and 0.5")
     if not re.fullmatch(r"[0-9a-f]{40}", generator_revision):
         raise ValueError("generator revision must be a full lowercase Git commit SHA")
-    source_manifest, source_manifest_bytes = _source_contract(
-        source_manifest_path, label_archive
+    source_manifest, source_manifest_bytes, source_artifacts = _source_contract(
+        source_manifest_path, audio_archive, label_archive
     )
     terms = _priority_terms(priority_terms_path)
     schema_resource = resources.files("chemicheck119_data").joinpath(
@@ -201,11 +247,31 @@ def build_training_split_manifest(
     record_ids: set[str] = set()
     transcript_digests: set[str] = set()
 
-    with zipfile.ZipFile(label_archive) as archive:
-        members = _safe_label_members(archive)
-        for info in members:
+    with zipfile.ZipFile(audio_archive) as audio_zip, zipfile.ZipFile(
+        label_archive
+    ) as label_zip:
+        audio_members = _safe_members(
+            audio_zip,
+            suffix=".wav",
+            maximum_bytes=MAX_AUDIO_MEMBER_BYTES,
+        )
+        label_members = _safe_members(
+            label_zip,
+            suffix=".json",
+            maximum_bytes=MAX_LABEL_MEMBER_BYTES,
+        )
+        if set(audio_members) != set(label_members):
+            raise ValueError("audio and label archive member stems do not pair exactly")
+        for stem in sorted(label_members):
+            info = label_members[stem]
             try:
-                document = json.loads(_read_bounded(archive, info).decode("utf-8-sig"))
+                document = json.loads(
+                    _read_bounded(
+                        label_zip,
+                        info,
+                        MAX_LABEL_MEMBER_BYTES,
+                    ).decode("utf-8-sig")
+                )
             except (UnicodeDecodeError, json.JSONDecodeError) as error:
                 raise ValueError("label archive contains invalid JSON") from error
             errors = list(validator.iter_errors(document))
@@ -223,16 +289,13 @@ def build_training_split_manifest(
             if transcript_digest in transcript_digests:
                 raise ValueError("label archive contains duplicate transcript content")
             transcript_digests.add(transcript_digest)
-            start_at = document.get("startAt")
-            end_at = document.get("endAt")
-            if (
-                not isinstance(start_at, int)
-                or isinstance(start_at, bool)
-                or not isinstance(end_at, int)
-                or isinstance(end_at, bool)
-                or end_at <= start_at
-            ):
-                raise ValueError("label archive contains invalid record duration")
+            audio_seconds = _audio_duration(
+                _read_bounded(
+                    audio_zip,
+                    audio_members[stem],
+                    MAX_AUDIO_MEMBER_BYTES,
+                )
+            )
             normalized_utterances = [
                 _normalise_search_text(text) for text in texts
             ]
@@ -241,7 +304,7 @@ def build_training_split_manifest(
                     "record_id": record_id,
                     "normalized_text": "".join(normalized_utterances),
                     "normalized_utterances": normalized_utterances,
-                    "audio_seconds": (end_at - start_at) / 1000,
+                    "audio_seconds": audio_seconds,
                     "order_digest": hashlib.sha256(
                         f"{DATASET_ID}:{seed}:{record_id}".encode("utf-8")
                     ).digest(),
@@ -277,12 +340,6 @@ def build_training_split_manifest(
 
     created = generated_at or datetime.now(timezone.utc).isoformat().replace(
         "+00:00", "Z"
-    )
-    source_artifacts = source_manifest["artifacts"]
-    label_artifact = next(
-        item
-        for item in source_artifacts
-        if PurePosixPath(str(item["path"])).name == label_archive.name
     )
     return {
         "schema_version": "1.0.0",
@@ -330,7 +387,7 @@ def build_training_split_manifest(
             "source_drift": {"status": "passed", "changes_detected": 0},
         },
         "artifacts": [
-            dict(label_artifact),
+            *source_artifacts,
             {
                 "path": f"data/manifests/{source_manifest_path.name}",
                 "sha256": hashlib.sha256(source_manifest_bytes).hexdigest(),
@@ -361,6 +418,7 @@ def build_training_split_manifest(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--audio-archive", type=Path, required=True)
     parser.add_argument("--label-archive", type=Path, required=True)
     parser.add_argument("--source-manifest", type=Path, required=True)
     parser.add_argument("--priority-terms", type=Path, required=True)
@@ -373,6 +431,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.output.exists():
         raise FileExistsError(f"refusing to overwrite append-only manifest: {args.output}")
     manifest = build_training_split_manifest(
+        audio_archive=args.audio_archive,
         label_archive=args.label_archive,
         source_manifest_path=args.source_manifest,
         priority_terms_path=args.priority_terms,

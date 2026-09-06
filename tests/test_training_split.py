@@ -1,19 +1,38 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 from pathlib import Path
 import tempfile
 import unittest
+import wave
 import zipfile
 
 from chemicheck119_data.aihub119 import DATASET_ID, DATASET_VERSION
 from chemicheck119_data.training_split import build_training_split_manifest, main
 
 
-def _write_inputs(root: Path, *, duplicate_record: bool = False) -> tuple[Path, Path, Path]:
+def _wav_bytes(seconds: float) -> bytes:
+    output = io.BytesIO()
+    with wave.open(output, "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(8000)
+        audio.writeframes(b"\x00\x00" * int(round(8000 * seconds)))
+    return output.getvalue()
+
+
+def _write_inputs(
+    root: Path,
+    *,
+    duplicate_record: bool = False,
+) -> tuple[Path, Path, Path, Path]:
+    audio = root / "TS_fixture.zip"
     labels = root / "TL_fixture.zip"
-    with zipfile.ZipFile(labels, "w") as archive:
+    with zipfile.ZipFile(audio, "w") as audio_zip, zipfile.ZipFile(
+        labels, "w"
+    ) as label_zip:
         for index in range(10):
             record_id = "record-0" if duplicate_record and index == 1 else f"record-{index}"
             document = {
@@ -35,9 +54,11 @@ def _write_inputs(root: Path, *, duplicate_record: bool = False) -> tuple[Path, 
                     }
                 ],
             }
-            archive.writestr(
+            audio_zip.writestr(f"/record-{index}.wav", _wav_bytes(1 + index / 1000))
+            label_zip.writestr(
                 f"/record-{index}.json", json.dumps(document, ensure_ascii=False)
             )
+    audio_sha = hashlib.sha256(audio.read_bytes()).hexdigest()
     label_sha = hashlib.sha256(labels.read_bytes()).hexdigest()
     source = root / "training.json"
     source_payload = {
@@ -60,7 +81,10 @@ def _write_inputs(root: Path, *, duplicate_record: bool = False) -> tuple[Path, 
             "duplicates": {"status": "passed", "count": 0},
             "schema_validation": {"status": "passed", "error_count": 0},
         },
-        "artifacts": [{"path": f"gs://private/{labels.name}", "sha256": label_sha}],
+        "artifacts": [
+            {"path": f"gs://private/{audio.name}", "sha256": audio_sha},
+            {"path": f"gs://private/{labels.name}", "sha256": label_sha},
+        ],
         "inventory": {
             "paired_count": 10,
             "audio_seconds": round(sum(1 + index / 1000 for index in range(10)), 3),
@@ -69,14 +93,15 @@ def _write_inputs(root: Path, *, duplicate_record: bool = False) -> tuple[Path, 
     source.write_text(json.dumps(source_payload), encoding="utf-8")
     terms = root / "terms.txt"
     terms.write_text("# public terms\n연기\nLPG\n", encoding="utf-8")
-    return labels, source, terms
+    return audio, labels, source, terms
 
 
 class TrainingSplitTest(unittest.TestCase):
     def test_builds_deterministic_aggregate_only_split(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            labels, source, terms = _write_inputs(Path(directory))
+            audio, labels, source, terms = _write_inputs(Path(directory))
             options = {
+                "audio_archive": audio,
                 "label_archive": labels,
                 "source_manifest_path": source,
                 "priority_terms_path": terms,
@@ -103,13 +128,14 @@ class TrainingSplitTest(unittest.TestCase):
 
     def test_rejects_label_archive_hash_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            labels, source, terms = _write_inputs(Path(directory))
+            audio, labels, source, terms = _write_inputs(Path(directory))
             payload = json.loads(source.read_text(encoding="utf-8"))
             payload["artifacts"][0]["sha256"] = "0" * 64
             source.write_text(json.dumps(payload), encoding="utf-8")
 
             with self.assertRaisesRegex(ValueError, "SHA-256"):
                 build_training_split_manifest(
+                    audio_archive=audio,
                     label_archive=labels,
                     source_manifest_path=source,
                     priority_terms_path=terms,
@@ -118,11 +144,12 @@ class TrainingSplitTest(unittest.TestCase):
 
     def test_rejects_duplicate_record_ids(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            labels, source, terms = _write_inputs(
+            audio, labels, source, terms = _write_inputs(
                 Path(directory), duplicate_record=True
             )
             with self.assertRaisesRegex(ValueError, "duplicate record IDs"):
                 build_training_split_manifest(
+                    audio_archive=audio,
                     label_archive=labels,
                     source_manifest_path=source,
                     priority_terms_path=terms,
@@ -132,7 +159,7 @@ class TrainingSplitTest(unittest.TestCase):
     def test_cli_refuses_to_overwrite_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            labels, source, terms = _write_inputs(root)
+            audio, labels, source, terms = _write_inputs(root)
             output = root / "split.json"
             output.write_text("existing", encoding="utf-8")
 
@@ -141,6 +168,8 @@ class TrainingSplitTest(unittest.TestCase):
                     [
                         "--label-archive",
                         str(labels),
+                        "--audio-archive",
+                        str(audio),
                         "--source-manifest",
                         str(source),
                         "--priority-terms",
