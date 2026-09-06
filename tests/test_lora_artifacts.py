@@ -130,7 +130,15 @@ class LoraArtifactsTest(unittest.TestCase):
             self.assertEqual(4, len(first["manifests"]))
             provenance = first["implementation_provenance"]
             self.assertEqual(
-                {"python", "zlib_compile", "zlib_runtime", "numpy", "scipy"},
+                {
+                    "python",
+                    "platform_system",
+                    "zipinfo_create_system",
+                    "zlib_compile",
+                    "zlib_runtime",
+                    "numpy",
+                    "scipy",
+                },
                 set(provenance["dependencies"]),
             )
             self.assertEqual(

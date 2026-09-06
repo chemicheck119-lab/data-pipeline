@@ -66,6 +66,8 @@ def _implementation_provenance() -> dict[str, object]:
         ],
         "dependencies": {
             "python": platform.python_version(),
+            "platform_system": platform.system(),
+            "zipinfo_create_system": zipfile.ZipInfo().create_system,
             "zlib_compile": zlib.ZLIB_VERSION,
             "zlib_runtime": zlib.ZLIB_RUNTIME_VERSION,
             "numpy": distribution_version("numpy"),
