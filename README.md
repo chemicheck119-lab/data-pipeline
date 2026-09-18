@@ -1,5 +1,13 @@
 # 케미체크119 Data Pipeline
 
+## 2026-09-18 프로젝트 상태
+
+- **구현 완료:** 공개 데이터 수집, provenance·license·checksum 기록, manifest 생성, schema·중복·split 정책 검사
+- **연계 범위:** analysis-engine과 speech-service 평가용 고정 artifact를 재현 가능한 입력으로 제공
+- **검증되지 않음:** 실제 시설 inventory 최신성, 실제 현장 무전 대표성, 독립 사람 검수 없는 relevance/일반화 주장
+- **보존 원칙:** 원본 제한 데이터·개인정보·음성·모델 가중치는 저장소에 커밋하지 않음
+- **운영 해석:** 시설 데이터는 과거 공개 후보이며 현재 재고를 의미하지 않음
+
 AIHub·KOSHA·ICIS·PRTR 등 공개·승인 데이터를 재현 가능하게 수집하고, 출처와 품질을 검증해 버전이 고정된 manifest를 만드는 저장소입니다.
 
 ## 책임
